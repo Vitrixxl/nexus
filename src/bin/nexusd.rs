@@ -1,0 +1,196 @@
+use nexus_control::{backend::Backend, *};
+use std::{
+    io::Write,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread,
+    time::Duration,
+};
+fn main() -> anyhow::Result<()> {
+    let (listener, _lock) = match listener("daemon") {
+        Ok(v) => v,
+        Err(e) => {
+            if request(&Request::Status).is_ok() {
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+    ])?;
+    thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            theme::stop_wallpaper();
+            std::process::exit(0);
+        }
+    });
+    let backend = Arc::new(Backend::new()?);
+    backend.register_agents();
+    let catalogue = Arc::new(Mutex::new(launcher::Catalogue::load()));
+    launcher::watch(catalogue.clone());
+    let settings = theme::load();
+    theme::write_theme(&settings)?;
+    let state = Arc::new(Mutex::new(Snapshot {
+        settings: settings.clone(),
+        ..Snapshot::default()
+    }));
+    if let Some(path) = settings.wallpaper {
+        thread::spawn(move || {
+            if let Err(e) = theme::apply_wallpaper(&path) {
+                eprintln!("{e}");
+            }
+        });
+    }
+    // Each subsystem polls independently: a radio timeout never freezes sound or IPC.
+    for subsystem in 0..3 {
+        let b = backend.clone();
+        let state = state.clone();
+        thread::spawn(move || {
+            loop {
+                match subsystem {
+                    0 => {
+                        let result = b.wifi();
+                        let mut s = state.lock().unwrap();
+                        match result {
+                            Ok((on, nets)) => {
+                                s.wifi = on;
+                                s.networks = nets;
+                                s.wifi_error = None;
+                            }
+                            Err(e) => {
+                                s.wifi_error = Some(e.to_string());
+                                s.networks.clear();
+                            }
+                        }
+                    }
+                    1 => {
+                        let result = b.bluetooth();
+                        let mut s = state.lock().unwrap();
+                        match result {
+                            Ok((on, devices)) => {
+                                s.bluetooth = on;
+                                s.devices = devices;
+                                s.bluetooth_error = None;
+                            }
+                            Err(e) => {
+                                s.bluetooth_error = Some(e.to_string());
+                                s.devices.clear();
+                            }
+                        }
+                    }
+                    _ => {
+                        let volume = backend::volume(false);
+                        let mic = backend::volume(true);
+                        let light = backend::brightness();
+                        let outputs = backend::audio_devices("sinks").unwrap_or_default();
+                        let inputs = backend::audio_devices("sources").unwrap_or_default();
+                        let default_output =
+                            backend::run("pactl", &["get-default-sink"]).unwrap_or_default();
+                        let default_input =
+                            backend::run("pactl", &["get-default-source"]).unwrap_or_default();
+                        let mut s = state.lock().unwrap();
+                        s.outputs = outputs;
+                        s.inputs = inputs;
+                        s.default_output = default_output;
+                        s.default_input = default_input;
+                        match volume {
+                            Ok((v, m)) => {
+                                s.volume = Some(v);
+                                s.muted = m;
+                                s.audio_error = None;
+                            }
+                            Err(e) => {
+                                s.volume = None;
+                                s.audio_error = Some(e.to_string());
+                            }
+                        }
+                        if let Ok((v, m)) = mic {
+                            s.microphone = Some(v);
+                            s.mic_muted = m;
+                        }
+                        match light {
+                            Ok(v) => {
+                                s.brightness = Some(v);
+                                s.brightness_error = None;
+                            }
+                            Err(e) => {
+                                s.brightness = None;
+                                s.brightness_error = Some(e.to_string());
+                            }
+                        }
+                    }
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
+    }
+    let mutations = Arc::new(Mutex::new(()));
+    let clients = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        if clients.fetch_add(1, Ordering::Relaxed) >= 32 {
+            clients.fetch_sub(1, Ordering::Relaxed);
+            continue;
+        }
+        let catalogue = catalogue.clone();
+        let b = backend.clone();
+        let state = state.clone();
+        let mutations = mutations.clone();
+        let clients = clients.clone();
+        thread::spawn(move || {
+            let reply = (|| -> anyhow::Result<Reply> {
+                let req: Request = serde_json::from_str(&read_line(&stream)?)?;
+                Ok(match req {
+                    Request::Status => {
+                        let mut snapshot = state.lock().unwrap().clone();
+                        snapshot.prompt = b.prompts.current();
+                        snapshot.applications_revision = catalogue.lock().unwrap().revision;
+                        Reply {
+                            ok: true,
+                            error: None,
+                            state: Some(snapshot),
+                            catalogue: None,
+                        }
+                    }
+                    Request::Applications => Reply {
+                        ok: true,
+                        error: None,
+                        state: None,
+                        catalogue: Some(catalogue.lock().unwrap().clone()),
+                    },
+                    Request::Launch { id } => Reply::result(catalogue.lock().unwrap().launch(&id)),
+                    Request::Answer {
+                        id,
+                        values,
+                        accepted,
+                    } => Reply::result(b.prompts.answer(id, values, accepted)),
+                    Request::Action { op, target, value } => match mutations.try_lock() {
+                        Ok(_guard) => Reply::result(b.action(&op, &target, &value)),
+                        Err(_) => Reply::result(Err(anyhow::anyhow!(
+                            "Another operation is in progress. Complete it or cancel its prompt first."
+                        ))),
+                    },
+                    Request::Theme { settings } => match mutations.try_lock() {
+                        Ok(_guard) => Reply::result(
+                            theme::save(settings)
+                                .map(|settings| state.lock().unwrap().settings = settings),
+                        ),
+                        Err(_) => {
+                            Reply::result(Err(anyhow::anyhow!("Another operation is in progress")))
+                        }
+                    },
+                })
+            })();
+            let reply = reply.unwrap_or_else(|e| Reply::result(Err(e)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+            let _ = serde_json::to_writer(&mut stream, &reply);
+            let _ = stream.write_all(b"\n");
+            clients.fetch_sub(1, Ordering::Relaxed);
+        });
+    }
+    Ok(())
+}

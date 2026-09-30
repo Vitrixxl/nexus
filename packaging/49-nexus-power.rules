@@ -1,0 +1,15 @@
+// Allow power controls only from an active, local desktop session.
+// No sudoers exception, remote permission or inhibitor bypass.
+polkit.addRule(function(action, subject) {
+    var allowed = [
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.power-off-multiple-sessions",
+        "org.freedesktop.login1.reboot",
+        "org.freedesktop.login1.reboot-multiple-sessions",
+        "org.freedesktop.login1.suspend",
+        "org.freedesktop.login1.suspend-multiple-sessions"
+    ];
+    if (subject.local && subject.active && allowed.indexOf(action.id) !== -1) {
+        return polkit.Result.YES;
+    }
+});

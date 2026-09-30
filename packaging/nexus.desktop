@@ -1,0 +1,30 @@
+[Desktop Entry]
+Type=Application
+Name=Nexus
+Comment=Wi-Fi, Bluetooth, sound and appearance
+Exec=nexus wifi
+Icon=preferences-system-symbolic
+Terminal=false
+Categories=Settings;System;
+StartupWMClass=io.github.vitrixxl.Nexus
+Actions=Wifi;Bluetooth;Sound;Appearance;Power;
+
+[Desktop Action Wifi]
+Name=Wi-Fi
+Exec=nexus wifi
+
+[Desktop Action Bluetooth]
+Name=Bluetooth
+Exec=nexus bluetooth
+
+[Desktop Action Sound]
+Name=Sound
+Exec=nexus sound
+
+[Desktop Action Appearance]
+Name=Appearance
+Exec=nexus appearance
+
+[Desktop Action Power]
+Name=Power
+Exec=nexus power

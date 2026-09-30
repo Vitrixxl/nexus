@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Works on runit, OpenRC and systemd. nexusd itself holds a singleton lock.
+set -eu
+export PATH="$HOME/.local/bin:$PATH"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/nexus"
+mkdir -p "$state"
+nexus init-theme
+nexusd >>"$state/daemon.log" 2>&1 &
+# Nexus owns the bar, launcher and settings panels in a single UI process.
+nexus shell >>"$state/shell.log" 2>&1 &

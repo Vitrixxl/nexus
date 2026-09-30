@@ -1,0 +1,24 @@
+name: Rust
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwayland-dev wayland-protocols meson ninja-build pkg-config dbus-x11 xvfb xauth
+      - name: Build GTK4 layer shell
+        run: |
+          git clone --depth 1 --branch v1.3.0 https://github.com/wmww/gtk4-layer-shell.git "$RUNNER_TEMP/gtk4-layer-shell"
+          meson setup "$RUNNER_TEMP/gtk4-layer-shell/build" "$RUNNER_TEMP/gtk4-layer-shell" --prefix=/usr -Dintrospection=false -Dvapi=false -Dexamples=false -Dtests=false
+          ninja -C "$RUNNER_TEMP/gtk4-layer-shell/build"
+          sudo ninja -C "$RUNNER_TEMP/gtk4-layer-shell/build" install
+          sudo ldconfig
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: GDK_BACKEND=x11 xvfb-run -a cargo test --locked --bin nexus keyboard_navigation -- --ignored --test-threads=1
+      - run: dbus-run-session -- cargo test --locked --test agents -- --ignored
