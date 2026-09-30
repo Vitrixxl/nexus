@@ -22,7 +22,7 @@ impl Launcher {
     pub fn new(catalogue: Catalogue, close: Rc<dyn Fn()>) -> Self {
         let root = vbox(0);
         root.add_css_class("launcher");
-        root.set_width_request(560);
+        root.set_width_request(600);
         let search_row = hbox(14);
         search_row.add_css_class("search-row");
         let icon = gtk::Image::from_icon_name("system-search-symbolic");
@@ -87,6 +87,9 @@ impl Launcher {
             Rc::new(move |query| {
                 let cache = catalogue.borrow();
                 let ranked = launcher::ranked(&cache.applications, &cache.history, query);
+                // Cached rows keep their selected flag when removed; GtkListBox then refuses
+                // to select them again, leaving stale highlights and no selected row for Enter.
+                results.unselect_all();
                 while let Some(child) = results.first_child() {
                     results.remove(&child);
                 }
@@ -227,8 +230,9 @@ impl Launcher {
     }
 }
 fn app_row(app: &Application) -> gtk::ListBoxRow {
+    const ICON: i32 = 36;
     let row = gtk::ListBoxRow::new();
-    let b = hbox(12);
+    let b = hbox(14);
     b.add_css_class("app-row");
     let icon = app
         .icon
@@ -238,23 +242,34 @@ fn app_row(app: &Application) -> gtk::ListBoxRow {
             let theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap());
             let paint = theme.lookup_by_gicon(
                 &i,
-                28,
-                1,
+                ICON,
+                2,
                 gtk::TextDirection::None,
                 gtk::IconLookupFlags::PRELOAD,
             );
             gtk::Image::from_paintable(Some(&paint))
         })
         .unwrap_or_else(|| gtk::Image::from_icon_name("application-x-executable-symbolic"));
-    icon.set_pixel_size(28);
+    icon.set_pixel_size(ICON);
     b.append(&icon);
+    let text = vbox(2);
+    text.set_hexpand(true);
+    text.set_valign(gtk::Align::Center);
     let name = label(&app.name, "app-name");
-    name.set_hexpand(true);
     name.set_wrap(false);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    b.append(&name);
+    // A tiny natural width lets long text ellipsize instead of widening the panel.
+    name.set_max_width_chars(1);
+    text.append(&name);
+    if !app.description.is_empty() {
+        let description = label(&app.description, "app-description");
+        description.set_wrap(false);
+        description.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        description.set_max_width_chars(1);
+        text.append(&description);
+    }
+    b.append(&text);
     b.append(&label("↵", "launch-arrow"));
-    row.set_tooltip_text((!app.description.is_empty()).then_some(&app.description));
     row.set_child(Some(&b));
     row
 }
@@ -324,6 +339,17 @@ mod tests {
         };
         let ctrl = gtk::gdk::ModifierType::CONTROL_MASK;
         assert_eq!(list.selected_row().unwrap().index(), 0);
+        // Searching reuses cached rows; the first result must still be selectable.
+        launcher.search.set_text("Probe");
+        launcher.search.set_text("");
+        assert_eq!(list.selected_row().unwrap().index(), 0);
+        let mut row = list.first_child();
+        let mut selected = 0;
+        while let Some(r) = row {
+            selected += usize::from(r.downcast_ref::<gtk::ListBoxRow>().unwrap().is_selected());
+            row = r.next_sibling();
+        }
+        assert_eq!(selected, 1, "only one row may be highlighted");
         press(gtk::gdk::Key::n, ctrl);
         assert_eq!(list.selected_row().unwrap().index(), 1);
         press(gtk::gdk::Key::p, ctrl);

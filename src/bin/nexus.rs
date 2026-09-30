@@ -10,6 +10,7 @@ use std::{
     thread,
     time::Duration,
 };
+use ui::control::ControlCenter;
 
 const PAGES: [(&str, &str, &str); 6] = [
     ("wifi", "Wi-Fi", "network-wireless-symbolic"),
@@ -27,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus status\nnexus init-theme"
+            "Nexus — desktop control center\n\nnexus [launcher|control|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus status\nnexus init-theme"
         );
         return Ok(());
     }
@@ -48,7 +49,9 @@ fn main() -> anyhow::Result<()> {
     }
     .map(String::as_str)
     .unwrap_or("launcher");
-    if !PAGES.iter().any(|p| p.0 == page) && !["launcher", "shell", "close"].contains(&page) {
+    if !PAGES.iter().any(|p| p.0 == page)
+        && !["launcher", "control", "shell", "close"].contains(&page)
+    {
         anyhow::bail!("Unknown page: {page}");
     }
     let activation =
@@ -109,6 +112,11 @@ fn label(text: &str, class: &str) -> gtk::Label {
     }
     l
 }
+fn caption(text: &str) -> gtk::Label {
+    let l = label(text, "muted");
+    l.add_css_class("caption");
+    l
+}
 fn vbox(spacing: i32) -> gtk::Box {
     gtk::Box::new(gtk::Orientation::Vertical, spacing)
 }
@@ -116,7 +124,9 @@ fn hbox(spacing: i32) -> gtk::Box {
     gtk::Box::new(gtk::Orientation::Horizontal, spacing)
 }
 fn button(text: &str) -> gtk::Button {
-    gtk::Button::with_label(text)
+    let b = gtk::Button::with_label(text);
+    b.set_valign(gtk::Align::Center);
+    b
 }
 fn clear(b: &gtk::Box) {
     while let Some(child) = b.first_child() {
@@ -130,6 +140,46 @@ fn action(op: &str, target: &str, value: &str) -> Request {
         value: value.into(),
     }
 }
+fn signal_icon(signal: u8) -> &'static str {
+    match signal {
+        75.. => "network-wireless-signal-excellent-symbolic",
+        50.. => "network-wireless-signal-good-symbolic",
+        25.. => "network-wireless-signal-ok-symbolic",
+        _ => "network-wireless-signal-weak-symbolic",
+    }
+}
+fn security_label(security: &str) -> &'static str {
+    if security.is_empty() || security == "none" {
+        "Open"
+    } else if security.contains("ieee8021x") {
+        "Enterprise"
+    } else if security.contains("wep") {
+        "WEP"
+    } else {
+        "Secured"
+    }
+}
+fn state_label(state: &str) -> Option<&'static str> {
+    match state {
+        "ready" | "online" => Some("Connected"),
+        "association" | "configuration" => Some("Connecting…"),
+        "disconnect" => Some("Disconnecting…"),
+        "failure" => Some("Connection failed"),
+        _ => None,
+    }
+}
+/// Error labels take no space until there is something to report.
+fn error_label() -> gtk::Label {
+    let l = label("", "error");
+    l.add_css_class("banner");
+    l.set_visible(false);
+    l
+}
+fn set_error(l: &gtk::Label, error: Option<&str>) {
+    let error = error.unwrap_or("");
+    l.set_text(error);
+    l.set_visible(!error.is_empty());
+}
 #[derive(Clone)]
 struct Ui {
     tx: mpsc::Sender<Event>,
@@ -141,18 +191,20 @@ enum Event {
     Catalogue(Box<launcher::Catalogue>),
     Done(Result<(), String>),
 }
+fn perform(req: &Request) -> Result<(), String> {
+    request(req).map_err(|e| e.to_string()).and_then(|r| {
+        if r.ok {
+            Ok(())
+        } else {
+            Err(r.error.unwrap_or_else(|| "Operation failed".into()))
+        }
+    })
+}
 impl Ui {
     fn send(&self, req: Request) {
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = request(&req).map_err(|e| e.to_string()).and_then(|r| {
-                if r.ok {
-                    Ok(())
-                } else {
-                    Err(r.error.unwrap_or_else(|| "Operation failed".into()))
-                }
-            });
-            let _ = tx.send(Event::Done(result));
+            let _ = tx.send(Event::Done(perform(&req)));
             if let Ok(reply) = request(&Request::Status)
                 && let Some(state) = reply.state
             {
@@ -187,33 +239,49 @@ fn toggle(ui: &Ui, op: &str) -> gtk::Switch {
     s
 }
 fn heading(title: &str, subtitle: &str) -> gtk::Box {
-    let b = vbox(8);
+    let b = vbox(4);
     b.append(&label(title, "title"));
     b.append(&label(subtitle, "muted"));
     b
 }
-fn radio_header(title: &str, toggle: &gtk::Switch, scan: &gtk::Button) -> gtk::Box {
-    let b = hbox(12);
-    b.add_css_class("card");
-    let l = label(title, "row-title");
-    l.set_hexpand(true);
-    b.append(&l);
-    b.append(scan);
-    b.append(toggle);
-    b
+/// Card with an icon, a title and a one-line status, followed by trailing widgets.
+fn row_card(icon: &str, title: &str) -> (gtk::Box, gtk::Label) {
+    let row = hbox(14);
+    row.add_css_class("card");
+    let image = gtk::Image::from_icon_name(icon);
+    image.set_pixel_size(18);
+    image.add_css_class("row-icon");
+    row.append(&image);
+    let text = vbox(2);
+    text.set_hexpand(true);
+    text.set_valign(gtk::Align::Center);
+    let name = label(title, "row-title");
+    name.set_wrap(false);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    text.append(&name);
+    let detail = caption("");
+    detail.set_wrap(false);
+    detail.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    text.append(&detail);
+    row.append(&text);
+    (row, detail)
 }
 fn page_box() -> gtk::Box {
-    let b = vbox(22);
-    b.set_margin_top(32);
-    b.set_margin_bottom(28);
+    let b = vbox(16);
+    b.set_margin_top(30);
+    b.set_margin_bottom(24);
     b.set_margin_start(32);
     b.set_margin_end(32);
     b
 }
-fn slider(ui: &Ui, title: &str, op: &str) -> (gtk::Box, gtk::Scale) {
-    let b = vbox(12);
-    b.add_css_class("card");
-    b.append(&label(title, "row-title"));
+fn scrolled(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(child)
+        .build()
+}
+fn slider(ui: &Ui, op: &str, target: &str) -> gtk::Scale {
     let s = gtk::Scale::with_range(
         gtk::Orientation::Horizontal,
         if op == "brightness" { 1. } else { 0. },
@@ -224,30 +292,57 @@ fn slider(ui: &Ui, title: &str, op: &str) -> (gtk::Box, gtk::Scale) {
     s.set_value_pos(gtk::PositionType::Right);
     s.set_hexpand(true);
     s.set_digits(0);
-    b.append(&s);
-    let pending = Rc::new(RefCell::new(None::<glib::SourceId>));
-    let ui = ui.clone();
+    s.set_format_value_func(|_, v| format!("{v:.0}%"));
+    // Levels apply while dragging. One worker per slider sends them in order and
+    // skips values it has not reached yet, so the daemon never sees overlapping
+    // requests and the latest position always wins.
+    let (values, pending) = mpsc::channel::<String>();
+    let tx = ui.tx.clone();
     let op = op.to_owned();
-    s.connect_value_changed(move |s| {
-        if ui.updating.get() {
-            return;
+    let target = target.to_owned();
+    thread::spawn(move || {
+        while let Ok(mut value) = pending.recv() {
+            while let Ok(newer) = pending.try_recv() {
+                value = newer;
+            }
+            if let Err(e) = perform(&action(&op, &target, &value))
+                && tx.send(Event::Done(Err(e))).is_err()
+            {
+                break;
+            }
         }
-        if let Some(id) = pending.borrow_mut().take() {
-            id.remove();
-        }
-        let value = s.value().round().to_string();
-        let ui = ui.clone();
-        let op = op.clone();
-        let pending2 = pending.clone();
-        *pending.borrow_mut() = Some(glib::timeout_add_local_once(
-            Duration::from_millis(180),
-            move || {
-                pending2.borrow_mut().take();
-                ui.send(action(&op, "", &value));
-            },
-        ));
     });
-    (b, s)
+    let ui = ui.clone();
+    s.connect_value_changed(move |s| {
+        if !ui.updating.get() {
+            let _ = values.send(s.value().round().to_string());
+        }
+    });
+    s
+}
+/// Title row with an optional mute switch, then the level and device picker.
+fn level_card(
+    title: &str,
+    scale: &gtk::Scale,
+    mute: Option<&gtk::Switch>,
+    devices: Option<&gtk::DropDown>,
+) -> gtk::Box {
+    let card = vbox(10);
+    card.add_css_class("card");
+    let head = hbox(10);
+    let t = label(title, "row-title");
+    t.set_hexpand(true);
+    head.append(&t);
+    if let Some(mute) = mute {
+        head.append(&caption("Mute"));
+        head.append(mute);
+    }
+    card.append(&head);
+    card.append(scale);
+    if let Some(devices) = devices {
+        card.append(devices);
+    }
+    card
 }
 fn audio_dropdown() -> gtk::DropDown {
     let dropdown = gtk::DropDown::from_strings(&[]);
@@ -257,7 +352,7 @@ fn audio_dropdown() -> gtk::DropDown {
         let label = gtk::Label::new(None);
         label.set_xalign(0.0);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        label.set_max_width_chars(42);
+        label.set_max_width_chars(48);
         item.set_child(Some(&label));
     });
     factory.connect_bind(|_, item| {
@@ -270,6 +365,96 @@ fn audio_dropdown() -> gtk::DropDown {
     dropdown.set_factory(Some(&factory));
     dropdown
 }
+fn network_row(ui: &Ui, window: &gtk::ApplicationWindow, net: &Network) -> gtk::Box {
+    let connected = matches!(net.state.as_str(), "ready" | "online");
+    let name = if net.name.is_empty() {
+        "Hidden network"
+    } else {
+        &net.name
+    };
+    let (row, detail) = row_card(signal_icon(net.signal), name);
+    row.add_css_class("list-row");
+    if connected {
+        row.add_css_class("active");
+    }
+    let mut details: Vec<&str> = state_label(&net.state).into_iter().collect();
+    details.push(security_label(&net.security));
+    if net.saved && !connected {
+        details.push("Saved");
+    }
+    detail.set_text(&details.join("  ·  "));
+    row.set_tooltip_text(Some(&format!("Signal {}%", net.signal)));
+    if net.saved {
+        let b = button("Forget");
+        b.add_css_class("flat");
+        bind_forget(&b, window, ui, "wifi-forget", &net.path, name);
+        row.append(&b);
+    }
+    let b = button(if connected { "Disconnect" } else { "Connect" });
+    ui.bind(
+        &b,
+        action(
+            if connected {
+                "wifi-disconnect"
+            } else {
+                "wifi-connect"
+            },
+            &net.path,
+            "",
+        ),
+    );
+    row.append(&b);
+    row
+}
+fn device_row(ui: &Ui, window: &gtk::ApplicationWindow, device: &Device) -> gtk::Box {
+    let (row, detail) = row_card("bluetooth-symbolic", &device.name);
+    row.add_css_class("list-row");
+    if device.connected {
+        row.add_css_class("active");
+    }
+    let status = if device.connected {
+        "Connected"
+    } else if device.paired {
+        "Paired"
+    } else {
+        "Available"
+    };
+    detail.set_text(&if device.name == device.address {
+        status.to_string()
+    } else {
+        format!("{status}  ·  {}", device.address)
+    });
+    if device.paired {
+        let b = button("Forget");
+        b.add_css_class("flat");
+        bind_forget(
+            &b,
+            window,
+            ui,
+            "bluetooth-forget",
+            &device.path,
+            &device.name,
+        );
+        row.append(&b);
+    }
+    let (text, op) = if device.connected {
+        ("Disconnect", "bluetooth-disconnect")
+    } else if device.paired {
+        ("Connect", "bluetooth-connect")
+    } else {
+        ("Pair", "bluetooth-pair")
+    };
+    let b = button(text);
+    ui.bind(&b, action(op, &device.path, ""));
+    row.append(&b);
+    row
+}
+fn empty_state(text: &str) -> gtk::Label {
+    let l = label(text, "empty-state");
+    l.set_xalign(0.5);
+    l.set_justify(gtk::Justification::Center);
+    l
+}
 fn build(
     app: &gtk::Application,
     initial: &str,
@@ -278,11 +463,13 @@ fn build(
 ) {
     let (initial, initial_query) = initial.split_once('\t').unwrap_or((initial, ""));
     let shell = ui::shell::Surface::new(app);
-    let window = shell.window.clone();
+    let control = ControlCenter::new(app);
+    let window = control.window.clone();
+    let stack = control.stack.clone();
     let provider = gtk::CssProvider::new();
     provider.load_from_data(&theme::css(&theme::load()));
     gtk::style_context_add_provider_for_display(
-        &gtk::prelude::WidgetExt::display(&window),
+        &gtk::prelude::WidgetExt::display(&shell.window),
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
@@ -293,116 +480,63 @@ fn build(
         settings: settings.clone(),
         updating: Rc::new(Cell::new(false)),
     };
-    let root = hbox(0);
-    root.set_size_request(860, 650);
-    let sidebar = vbox(8);
-    sidebar.add_css_class("sidebar");
-    sidebar.set_width_request(172);
-    sidebar.append(&label("nexus", "brand"));
-    let subtitle = label("CONTROL CENTER", "eyebrow");
-    subtitle.set_margin_bottom(30);
-    sidebar.append(&subtitle);
-    let stack = gtk::Stack::new();
-    stack.set_hexpand(true);
-    stack.set_hhomogeneous(false);
-    stack.set_vhomogeneous(false);
-    stack.set_vexpand(true);
-    stack.set_transition_type(gtk::StackTransitionType::Crossfade);
-    stack.set_transition_duration(140);
-    let mut navs = vec![];
-    for (id, title, icon) in PAGES {
-        let b = gtk::Button::new();
-        let row = hbox(10);
-        row.append(&gtk::Image::from_icon_name(icon));
-        row.append(&label(title, ""));
-        b.set_child(Some(&row));
-        let st = stack.clone();
-        let shell = shell.clone();
-        let sidebar_nav = sidebar.clone();
-        let root = root.clone();
-        b.connect_clicked(move |_| {
-            sidebar_nav.set_visible(id != "power");
-            root.set_size_request(860, if id == "power" { 430 } else { 650 });
-            st.set_visible_child_name(id);
-            shell.show(id, None);
-        });
-        sidebar.append(&b);
-        navs.push((id, b));
-    }
-    let spacer = vbox(0);
-    spacer.set_vexpand(true);
-    sidebar.append(&spacer);
-    sidebar.append(&label("A little more in control.", "muted"));
-    let content = vbox(0);
-    content.set_hexpand(true);
-    content.append(&stack);
-    let status = label("", "muted");
-    status.set_margin_start(32);
-    status.set_margin_end(32);
-    status.set_margin_bottom(12);
-    content.append(&status);
-    root.append(&sidebar);
-    root.append(&content);
-    shell.content.add_named(&root, Some("settings"));
+
     let wifi = page_box();
     wifi.append(&heading("Wi-Fi", "Your networks, one connection away."));
+    let (wifi_header, wifi_status) = row_card("network-wireless-symbolic", "Wi-Fi");
+    let wifi_scan = button("Scan");
+    ui.bind(&wifi_scan, action("wifi-scan", "", ""));
     let wifi_toggle = toggle(&ui, "wifi-power");
-    let scan = button("Refresh");
-    ui.bind(&scan, action("wifi-scan", "", ""));
-    wifi.append(&radio_header("Wireless", &wifi_toggle, &scan));
-    let wifi_error = label("", "error");
+    wifi_header.append(&wifi_scan);
+    wifi_header.append(&wifi_toggle);
+    wifi.append(&wifi_header);
+    let wifi_error = error_label();
     wifi.append(&wifi_error);
     let wifi_list = vbox(8);
-    let scroll = gtk::ScrolledWindow::builder()
-        .vexpand(true)
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&wifi_list)
-        .build();
-    wifi.append(&scroll);
+    wifi.append(&scrolled(&wifi_list));
     stack.add_named(&wifi, Some("wifi"));
+
     let bt = page_box();
     bt.append(&heading(
         "Bluetooth",
         "Make room for your favorite devices.",
     ));
+    let (bt_header, bt_status) = row_card("bluetooth-symbolic", "Bluetooth");
+    let bt_scan = button("Scan");
+    ui.bind(&bt_scan, action("bluetooth-scan", "", ""));
     let bt_toggle = toggle(&ui, "bluetooth-power");
-    let scan = button("Find devices");
-    ui.bind(&scan, action("bluetooth-scan", "", ""));
-    bt.append(&radio_header("Bluetooth", &bt_toggle, &scan));
-    let bt_error = label("", "error");
+    bt_header.append(&bt_scan);
+    bt_header.append(&bt_toggle);
+    bt.append(&bt_header);
+    let bt_error = error_label();
     bt.append(&bt_error);
     let bt_list = vbox(8);
-    bt.append(
-        &gtk::ScrolledWindow::builder()
-            .vexpand(true)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&bt_list)
-            .build(),
-    );
+    bt.append(&scrolled(&bt_list));
     stack.add_named(&bt, Some("bluetooth"));
+
     let sound = page_box();
     sound.append(&heading("Sound", "Set the right level."));
-    let (b, volume) = slider(&ui, "Output volume", "volume");
+    let volume = slider(&ui, "volume", "");
     let mute = toggle(&ui, "mute");
-    let mute_row = hbox(12);
-    mute_row.append(&label("Mute output", "muted"));
-    mute_row.append(&mute);
-    b.append(&mute_row);
     let outputs = audio_dropdown();
-    b.append(&outputs);
-    sound.append(&b);
-    let (b, microphone) = slider(&ui, "Microphone", "microphone");
+    sound.append(&level_card("Output", &volume, Some(&mute), Some(&outputs)));
+    let streams = ui::streams::StreamList::new();
+    sound.append(&streams.widget);
+    let microphone = slider(&ui, "microphone", "");
     let mic_mute = toggle(&ui, "mic-mute");
-    let row = hbox(12);
-    row.append(&label("Mute microphone", "muted"));
-    row.append(&mic_mute);
-    b.append(&row);
     let inputs = audio_dropdown();
-    b.append(&inputs);
-    sound.append(&b);
-    let audio_error = label("", "error");
+    sound.append(&level_card(
+        "Microphone",
+        &microphone,
+        Some(&mic_mute),
+        Some(&inputs),
+    ));
+    let audio_error = error_label();
     sound.append(&audio_error);
-    stack.add_named(&sound, Some("sound"));
+    // Many playing applications can outgrow the window.
+    let sound_scroll = scrolled(&sound);
+    sound_scroll.set_propagate_natural_height(true);
+    stack.add_named(&sound_scroll, Some("sound"));
     let output_devices = Rc::new(RefCell::new(Vec::<AudioDevice>::new()));
     let input_devices = Rc::new(RefCell::new(Vec::<AudioDevice>::new()));
     for (dropdown, devices, op) in [
@@ -418,51 +552,96 @@ fn build(
             }
         });
     }
+
     let display = page_box();
     display.append(&heading("Display", "A comfortable view, day or night."));
-    let (b, brightness) = slider(&ui, "Brightness", "brightness");
-    display.append(&b);
-    let light_error = label("", "error");
+    let brightness = slider(&ui, "brightness", "");
+    display.append(&level_card("Brightness", &brightness, None, None));
+    let light_error = error_label();
     display.append(&light_error);
-    let appearance_shortcut = button("Wallpaper & theme →");
+    let (shortcut, shortcut_detail) = row_card(
+        "preferences-desktop-wallpaper-symbolic",
+        "Wallpaper & theme",
+    );
+    shortcut_detail.set_text("Light or dark mode, wallpaper and accent color");
+    let go = button("Open");
     let st = stack.clone();
-    appearance_shortcut.connect_clicked(move |_| st.set_visible_child_name("appearance"));
-    display.append(&appearance_shortcut);
+    go.connect_clicked(move |_| st.set_visible_child_name("appearance"));
+    shortcut.append(&go);
+    display.append(&shortcut);
     stack.add_named(&display, Some("display"));
+
     let appearance = page_box();
     appearance.append(&heading("Appearance", "Make yourself at home."));
-    let themes = hbox(12);
-    for (mode, title) in [("light", "☀  Light"), ("dark", "☾  Dark")] {
-        let b = button(title);
-        b.set_hexpand(true);
+    let (mode_row, mode_detail) = row_card("weather-clear-night-symbolic", "Mode");
+    mode_detail.set_text("Surfaces for the bar, launcher and panels");
+    let segmented = hbox(0);
+    segmented.add_css_class("segmented");
+    segmented.set_valign(gtk::Align::Center);
+    let light = gtk::ToggleButton::with_label("Light");
+    let dark = gtk::ToggleButton::with_label("Dark");
+    dark.set_group(Some(&light));
+    dark.set_active(settings.borrow().mode == "dark");
+    light.set_active(settings.borrow().mode != "dark");
+    for (b, mode) in [(&light, "light"), (&dark, "dark")] {
         let ui = ui.clone();
-        b.connect_clicked(move |_| {
-            ui.settings.borrow_mut().mode = mode.into();
-            ui.save_theme();
+        b.connect_toggled(move |b| {
+            if b.is_active() && !ui.updating.get() && ui.settings.borrow().mode != mode {
+                ui.settings.borrow_mut().mode = mode.into();
+                ui.save_theme();
+            }
         });
-        themes.append(&b);
+        segmented.append(b);
     }
-    appearance.append(&themes);
+    mode_row.append(&segmented);
+    appearance.append(&mode_row);
+    let wallpaper_card = vbox(12);
+    wallpaper_card.add_css_class("card");
     let preview = gtk::Picture::new();
     preview.set_can_shrink(true);
     preview.set_content_fit(gtk::ContentFit::Cover);
-    preview.set_height_request(190);
-    if let Some(path) = &settings.borrow().wallpaper {
-        preview.set_filename(Some(path));
-    }
-    appearance.append(&preview);
-    let wallpaper_name = label(
-        settings
-            .borrow()
-            .wallpaper
-            .as_deref()
-            .unwrap_or("Your current wallpaper is kept until you choose an image."),
-        "muted",
-    );
+    let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    frame.add_css_class("wallpaper-frame");
+    frame.set_overflow(gtk::Overflow::Hidden);
+    frame.set_height_request(170);
+    preview.set_vexpand(true);
+    frame.append(&preview);
+    wallpaper_card.append(&frame);
+    let wallpaper_row = hbox(12);
+    let text = vbox(2);
+    text.set_hexpand(true);
+    text.set_valign(gtk::Align::Center);
+    text.append(&label("Wallpaper", "row-title"));
+    let wallpaper_name = caption("");
     wallpaper_name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     wallpaper_name.set_wrap(false);
-    appearance.append(&wallpaper_name);
-    let choose = button("Choose wallpaper…");
+    text.append(&wallpaper_name);
+    wallpaper_row.append(&text);
+    let show_wallpaper = {
+        let preview = preview.clone();
+        let frame = frame.clone();
+        let name = wallpaper_name.clone();
+        move |path: Option<&str>| {
+            frame.set_visible(path.is_some());
+            preview.set_filename(path);
+            match path {
+                Some(path) => {
+                    let file = std::path::Path::new(path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.to_string());
+                    name.set_text(&file);
+                    name.set_tooltip_text(Some(path));
+                }
+                None => {
+                    name.set_text("Your current wallpaper is kept until you choose an image.");
+                    name.set_tooltip_text(None);
+                }
+            }
+        }
+    };
+    show_wallpaper(settings.borrow().wallpaper.as_deref());
+    let choose = button("Choose…");
     choose.add_css_class("suggested-action");
     let w = window.clone();
     let ui2 = ui.clone();
@@ -480,10 +659,7 @@ fn build(
         filters.append(&filter);
         dialog.set_filters(Some(&filters));
         let ui = ui2.clone();
-        w.set_keyboard_mode(KeyboardMode::OnDemand);
-        let focus_window = w.clone();
         dialog.open(Some(&w), None::<&gio::Cancellable>, move |result| {
-            focus_window.set_keyboard_mode(KeyboardMode::Exclusive);
             if let Ok(file) = result
                 && let Some(path) = file.path()
             {
@@ -492,21 +668,15 @@ fn build(
             }
         });
     });
-    appearance.append(&choose);
+    wallpaper_row.append(&choose);
+    wallpaper_card.append(&wallpaper_row);
+    appearance.append(&wallpaper_card);
+    let (colors_row, colors_detail) =
+        row_card("applications-graphics-symbolic", "Colors from wallpaper");
+    colors_detail.set_text("Use an image-inspired accent across your shell.");
     let colors = gtk::Switch::new();
     colors.set_active(settings.borrow().wallpaper_colors);
     colors.set_valign(gtk::Align::Center);
-    let row = hbox(16);
-    row.add_css_class("card");
-    let text = vbox(6);
-    text.set_hexpand(true);
-    text.append(&label("Colors from wallpaper", "row-title"));
-    text.append(&label(
-        "Use an image-inspired accent across your shell.",
-        "muted",
-    ));
-    row.append(&text);
-    row.append(&colors);
     let ui2 = ui.clone();
     colors.connect_active_notify(move |s| {
         if !ui2.updating.get() {
@@ -514,71 +684,148 @@ fn build(
             ui2.save_theme();
         }
     });
-    appearance.append(&row);
+    colors_row.append(&colors);
+    appearance.append(&colors_row);
     stack.add_named(&appearance, Some("appearance"));
-    let power = page_box();
-    power.set_valign(gtk::Align::Center);
-    power.set_halign(gtk::Align::Center);
+    stack.set_visible_child_name("wifi");
+
+    // Power stays a full-screen overlay; choices are confirmed inline because a
+    // regular dialog would open underneath the overlay layer.
+    let power = vbox(20);
+    power.add_css_class("power-page");
     power.append(&heading("Take a break.", "What would you like to do?"));
-    let tiles = hbox(18);
-    for (op, title, icon) in [
-        ("sleep", "Sleep", "weather-clear-night-symbolic"),
-        ("restart", "Restart", "view-refresh-symbolic"),
-        ("shutdown", "Shutdown", "system-shutdown-symbolic"),
+    let tiles = hbox(14);
+    tiles.set_homogeneous(true);
+    power.append(&tiles);
+    let confirm_row = hbox(12);
+    confirm_row.add_css_class("card");
+    confirm_row.set_visible(false);
+    let confirm_text = label("", "row-title");
+    confirm_text.set_hexpand(true);
+    confirm_text.set_valign(gtk::Align::Center);
+    confirm_row.append(&confirm_text);
+    let confirm_cancel = button("Cancel");
+    confirm_cancel.add_css_class("flat");
+    confirm_row.append(&confirm_cancel);
+    let confirm_accept = button("");
+    confirm_row.append(&confirm_accept);
+    power.append(&confirm_row);
+    let power_error = error_label();
+    power.append(&power_error);
+    let back = button("Back to desktop  ·  Esc");
+    back.add_css_class("flat");
+    back.set_halign(gtk::Align::Center);
+    let shell2 = shell.clone();
+    back.connect_clicked(move |_| shell2.hide());
+    power.append(&back);
+    let pending_power = Rc::new(Cell::new(None::<&'static str>));
+    for (op, title, icon, question) in [
+        (
+            "sleep",
+            "Sleep",
+            "weather-clear-night-symbolic",
+            "Suspend this computer?",
+        ),
+        (
+            "restart",
+            "Restart",
+            "view-refresh-symbolic",
+            "Restart now? Unsaved work will be lost.",
+        ),
+        (
+            "shutdown",
+            "Shut down",
+            "system-shutdown-symbolic",
+            "Shut down now? Unsaved work will be lost.",
+        ),
     ] {
         let b = gtk::Button::new();
         b.add_css_class("power-tile");
         if op == "shutdown" {
             b.add_css_class("danger");
         }
-        let content = vbox(20);
+        let content = vbox(16);
         let image = gtk::Image::from_icon_name(icon);
-        image.set_pixel_size(48);
+        image.set_pixel_size(40);
         content.append(&image);
-        let text = gtk::Label::new(Some(title));
-        content.append(&text);
+        content.append(&gtk::Label::new(Some(title)));
         b.set_child(Some(&content));
-        let w = window.clone();
-        let ui = ui.clone();
-        b.connect_clicked(move |_| {
-            confirm(
-                &w,
-                &format!("{title} this computer?"),
-                if op == "sleep" {
-                    "Your session will be suspended."
-                } else {
-                    "Save your work before continuing."
-                },
-                &ui,
-                action(op, "", ""),
-            );
+        let tiles2 = tiles.clone();
+        let pending = pending_power.clone();
+        let row = confirm_row.clone();
+        let text = confirm_text.clone();
+        let accept = confirm_accept.clone();
+        let error = power_error.clone();
+        b.connect_clicked(move |b| {
+            let mut child = tiles2.first_child();
+            while let Some(c) = child {
+                c.remove_css_class("selected");
+                child = c.next_sibling();
+            }
+            b.add_css_class("selected");
+            pending.set(Some(op));
+            set_error(&error, None);
+            text.set_text(question);
+            accept.set_label(title);
+            let (add, remove) = if op == "sleep" {
+                ("suggested-action", "destructive-action")
+            } else {
+                ("destructive-action", "suggested-action")
+            };
+            accept.remove_css_class(remove);
+            accept.add_css_class(add);
+            row.set_visible(true);
+            accept.grab_focus();
         });
         tiles.append(&b);
     }
-    power.append(&tiles);
-    let back = button("Back to desktop · Esc");
-    let w = window.clone();
-    back.connect_clicked(move |_| w.close());
-    power.append(&back);
-    stack.add_named(&power, Some("power"));
+    let reset_power: Rc<dyn Fn()> = {
+        let tiles = tiles.clone();
+        let pending = pending_power.clone();
+        let row = confirm_row.clone();
+        let error = power_error.clone();
+        Rc::new(move || {
+            let mut child = tiles.first_child();
+            while let Some(c) = child {
+                c.remove_css_class("selected");
+                child = c.next_sibling();
+            }
+            pending.set(None);
+            row.set_visible(false);
+            set_error(&error, None);
+        })
+    };
+    let reset = reset_power.clone();
+    confirm_cancel.connect_clicked(move |_| reset());
+    let ui2 = ui.clone();
+    confirm_accept.connect_clicked(move |_| {
+        if let Some(op) = pending_power.get() {
+            ui2.send(action(op, "", ""));
+        }
+    });
+    shell.content.add_named(&power, Some("power"));
+
     let shell2 = shell.clone();
     let initial_revision = catalogue.revision;
     let launcher = ui::launcher::Launcher::new(catalogue, Rc::new(move || shell2.hide()));
     shell.content.add_named(&launcher.widget, Some("launcher"));
     let shell2 = shell.clone();
-    let stack2 = stack.clone();
+    let control2 = control.clone();
     let search = launcher.search.clone();
-    let sidebar2 = sidebar.clone();
-    let root2 = root.clone();
     let open: ui::shell::Open = Rc::new(move |page, monitor| {
-        if shell2.window.is_visible() && shell2.page.borrow().as_str() == page {
+        if page != "launcher" && page != "power" {
+            if shell2.window.is_visible() {
+                shell2.hide();
+            }
+            control2.toggle(page);
+            return;
+        }
+        if shell2.is_open(page) {
             shell2.hide();
             return;
         }
-        sidebar2.set_visible(page != "power");
-        root2.set_size_request(860, if page == "power" { 430 } else { 650 });
-        if page != "launcher" {
-            stack2.set_visible_child_name(page);
+        if page == "power" {
+            reset_power();
         }
         shell2.show(page, monitor);
         if page == "launcher" {
@@ -589,6 +836,8 @@ fn build(
             });
         }
     });
+    let open2 = open.clone();
+    control.power.connect_clicked(move |_| open2("power", None));
     let bars = ui::shell::Bars::new(app, open.clone());
     if initial != "shell" {
         open(initial, None);
@@ -649,7 +898,7 @@ fn build(
                 glib::idle_add_local_once(move || {
                     entry.grab_focus();
                 });
-            } else if PAGES.iter().any(|p| p.0 == page) || page == "launcher" {
+            } else if PAGES.iter().any(|p| p.0 == page) || ["launcher", "control"].contains(&page) {
                 command_open(page, command_monitor.borrow().as_ref());
             }
         }
@@ -672,36 +921,82 @@ fn build(
         }
     });
     glib::timeout_add_local(Duration::from_millis(100), move || {
-        for (id, b) in &navs {
-            if stack.visible_child_name().as_deref() == Some(*id) {
-                b.add_css_class("nav-active");
-            } else {
-                b.remove_css_class("nav-active");
-            }
-        }
         for event in rx.try_iter() {
             match event {
-                Event::Done(result) => match result {
-                    Ok(()) => {
-                        status.remove_css_class("error");
-                        status.set_text("Done");
+                Event::Done(result) => {
+                    if shell.is_open("power") {
+                        match &result {
+                            Ok(()) => shell.hide(),
+                            Err(e) => set_error(&power_error, Some(e)),
+                        }
                     }
-                    Err(e) => {
-                        status.add_css_class("error");
-                        status.set_text(&e);
-                    }
-                },
+                    control.report(result);
+                }
                 Event::Catalogue(catalogue) => launcher.update(*catalogue),
                 Event::State(state) => {
                     let s = *state;
                     bars.update(&s);
                     ui.updating.set(true);
                     wifi_toggle.set_active(s.wifi);
+                    wifi_scan.set_sensitive(s.wifi);
                     bt_toggle.set_active(s.bluetooth);
-                    wifi_error.set_text(s.wifi_error.as_deref().unwrap_or(""));
-                    bt_error.set_text(s.bluetooth_error.as_deref().unwrap_or(""));
-                    audio_error.set_text(s.audio_error.as_deref().unwrap_or(""));
-                    light_error.set_text(s.brightness_error.as_deref().unwrap_or(""));
+                    bt_scan.set_sensitive(s.bluetooth);
+                    set_error(&wifi_error, s.wifi_error.as_deref());
+                    set_error(&bt_error, s.bluetooth_error.as_deref());
+                    set_error(&audio_error, s.audio_error.as_deref());
+                    set_error(&light_error, s.brightness_error.as_deref());
+                    let network = s
+                        .networks
+                        .iter()
+                        .find(|n| matches!(n.state.as_str(), "ready" | "online"));
+                    wifi_status.set_text(&match network {
+                        _ if !s.wifi => "Off".to_string(),
+                        Some(n) => format!("Connected to {}", n.name),
+                        None => "Not connected".to_string(),
+                    });
+                    let connected = s.devices.iter().filter(|d| d.connected).count();
+                    bt_status.set_text(&match connected {
+                        _ if !s.bluetooth => "Off".to_string(),
+                        0 => "On".to_string(),
+                        1 => "1 device connected".to_string(),
+                        n => format!("{n} devices connected"),
+                    });
+                    control.set_detail(
+                        "wifi",
+                        match network {
+                            _ if !s.wifi => "Off",
+                            Some(n) => &n.name,
+                            None => "On",
+                        },
+                    );
+                    control.set_detail(
+                        "bluetooth",
+                        &match connected {
+                            _ if !s.bluetooth => "Off".to_string(),
+                            0 => "On".to_string(),
+                            n => format!("{n} connected"),
+                        },
+                    );
+                    control.set_detail(
+                        "sound",
+                        &match s.volume {
+                            _ if s.muted => "Muted".to_string(),
+                            Some(v) => format!("{v}%"),
+                            None => String::new(),
+                        },
+                    );
+                    control.set_detail(
+                        "display",
+                        &s.brightness.map(|v| format!("{v}%")).unwrap_or_default(),
+                    );
+                    control.set_detail(
+                        "appearance",
+                        if s.settings.mode == "dark" {
+                            "Dark"
+                        } else {
+                            "Light"
+                        },
+                    );
                     for (slider, value) in [
                         (&volume, s.volume),
                         (&microphone, s.microphone),
@@ -716,6 +1011,7 @@ fn build(
                     }
                     mute.set_active(s.muted);
                     mic_mute.set_active(s.mic_muted);
+                    streams.update(&ui, &s.streams);
                     for (dropdown, stored, devices, default) in [
                         (&outputs, &output_devices, &s.outputs, &s.default_output),
                         (&inputs, &input_devices, &s.inputs, &s.default_input),
@@ -726,6 +1022,7 @@ fn build(
                             dropdown.set_model(Some(&gtk::StringList::new(&names)));
                             *stored.borrow_mut() = devices.clone();
                         }
+                        dropdown.set_visible(!devices.is_empty());
                         dropdown.set_selected(
                             devices
                                 .iter()
@@ -737,123 +1034,28 @@ fn build(
                     if first || s.networks != last_networks {
                         clear(&wifi_list);
                         if s.networks.is_empty() {
-                            wifi_list.append(&label(
-                                if s.wifi {
-                                    "No networks found. Try Refresh."
-                                } else {
-                                    "Turn on Wi-Fi to discover networks."
-                                },
-                                "muted",
-                            ));
+                            wifi_list.append(&empty_state(if s.wifi {
+                                "No networks found.\nSelect Scan to look again."
+                            } else {
+                                "Wi-Fi is off.\nTurn it on to discover networks."
+                            }));
                         }
                         for net in &s.networks {
-                            let row = hbox(12);
-                            row.add_css_class("card");
-                            let text = vbox(5);
-                            text.set_hexpand(true);
-                            text.append(&label(&net.name, "row-title"));
-                            text.append(&label(
-                                &format!(
-                                    "{}%  ·  {}  ·  {}",
-                                    net.signal,
-                                    if net.security == "none" {
-                                        "Open"
-                                    } else {
-                                        &net.security
-                                    },
-                                    net.state
-                                ),
-                                "muted",
-                            ));
-                            row.append(&text);
-                            let connected = matches!(net.state.as_str(), "ready" | "online");
-                            let b = button(if connected { "Disconnect" } else { "Connect" });
-                            ui.bind(
-                                &b,
-                                action(
-                                    if connected {
-                                        "wifi-disconnect"
-                                    } else {
-                                        "wifi-connect"
-                                    },
-                                    &net.path,
-                                    "",
-                                ),
-                            );
-                            row.append(&b);
-                            if net.saved {
-                                let b = button("Forget");
-                                bind_forget(&b, &window, &ui, "wifi-forget", &net.path, &net.name);
-                                row.append(&b);
-                            }
-                            wifi_list.append(&row);
+                            wifi_list.append(&network_row(&ui, &window, net));
                         }
                         last_networks = s.networks;
                     }
                     if first || s.devices != last_devices {
                         clear(&bt_list);
                         if s.devices.is_empty() {
-                            bt_list.append(&label(
-                                "No devices yet. Turn on Bluetooth and select Find devices.",
-                                "muted",
-                            ));
+                            bt_list.append(&empty_state(if s.bluetooth {
+                                "No devices yet.\nSelect Scan to find nearby devices."
+                            } else {
+                                "Bluetooth is off.\nTurn it on to connect devices."
+                            }));
                         }
                         for device in &s.devices {
-                            let row = hbox(12);
-                            row.add_css_class("card");
-                            let text = vbox(5);
-                            text.set_hexpand(true);
-                            text.append(&label(&device.name, "row-title"));
-                            text.append(&label(
-                                &format!(
-                                    "{} · {}",
-                                    device.address,
-                                    if device.connected {
-                                        "Connected"
-                                    } else if device.paired {
-                                        "Paired"
-                                    } else {
-                                        "Available"
-                                    }
-                                ),
-                                "muted",
-                            ));
-                            row.append(&text);
-                            let b = button(if device.connected {
-                                "Disconnect"
-                            } else if device.paired {
-                                "Connect"
-                            } else {
-                                "Pair"
-                            });
-                            ui.bind(
-                                &b,
-                                action(
-                                    if device.connected {
-                                        "bluetooth-disconnect"
-                                    } else if device.paired {
-                                        "bluetooth-connect"
-                                    } else {
-                                        "bluetooth-pair"
-                                    },
-                                    &device.path,
-                                    "",
-                                ),
-                            );
-                            row.append(&b);
-                            if device.paired {
-                                let b = button("Forget");
-                                bind_forget(
-                                    &b,
-                                    &window,
-                                    &ui,
-                                    "bluetooth-forget",
-                                    &device.path,
-                                    &device.name,
-                                );
-                                row.append(&b);
-                            }
-                            bt_list.append(&row);
+                            bt_list.append(&device_row(&ui, &window, device));
                         }
                         last_devices = s.devices;
                     }
@@ -865,10 +1067,9 @@ fn build(
                         }
                         provider.load_from_data(&theme::css(&s.settings));
                         colors.set_active(s.settings.wallpaper_colors);
-                        if let Some(path) = &s.settings.wallpaper {
-                            preview.set_filename(Some(path));
-                            wallpaper_name.set_text(path);
-                        }
+                        light.set_active(s.settings.mode != "dark");
+                        dark.set_active(s.settings.mode == "dark");
+                        show_wallpaper(s.settings.wallpaper.as_deref());
                         *settings.borrow_mut() = s.settings;
                         last_theme = theme_key;
                     }
@@ -878,7 +1079,7 @@ fn build(
                             dialog.close();
                         }
                         if let Some(prompt) = s.prompt {
-                            let dialog = show_prompt(&window, &ui, &prompt);
+                            let dialog = show_prompt(&ui, &prompt);
                             shown_prompt = Some((prompt.id, dialog));
                         }
                     }
@@ -903,60 +1104,55 @@ fn bind_forget(
     let req = action(op, path, "");
     let name = name.to_string();
     button.connect_clicked(move |_| {
-        confirm(
-            &parent,
-            &format!("Forget {name}?"),
-            "Saved credentials or pairing will be removed.",
-            &ui,
-            req.clone(),
-        );
+        let dialog = gtk::AlertDialog::builder()
+            .message(format!("Forget {name}?"))
+            .detail("Saved credentials or pairing will be removed.")
+            .buttons(["Cancel", "Forget"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let ui = ui.clone();
+        let req = req.clone();
+        dialog.choose(Some(&parent), None::<&gio::Cancellable>, move |result| {
+            if matches!(result, Ok(1)) {
+                ui.send(req);
+            }
+        });
     });
 }
-fn confirm(parent: &gtk::ApplicationWindow, title: &str, detail: &str, ui: &Ui, req: Request) {
-    let dialog = gtk::AlertDialog::builder()
-        .message(title)
-        .detail(detail)
-        .buttons(["Cancel", "Confirm"])
-        .cancel_button(0)
-        .default_button(0)
-        .modal(true)
-        .build();
-    let ui = ui.clone();
-    parent.set_keyboard_mode(KeyboardMode::OnDemand);
-    let focus_window = parent.clone();
-    dialog.choose(Some(parent), None::<&gio::Cancellable>, move |result| {
-        focus_window.set_keyboard_mode(KeyboardMode::Exclusive);
-        if matches!(result, Ok(1)) {
-            ui.send(req);
-        }
-    });
-}
-fn show_prompt(parent: &gtk::ApplicationWindow, ui: &Ui, p: &Prompt) -> gtk::Window {
+/// Credential and pairing prompts may arrive while no Nexus window is open, so
+/// they use their own overlay surface with exclusive keyboard focus.
+fn show_prompt(ui: &Ui, p: &Prompt) -> gtk::Window {
     let dialog = gtk::Window::builder()
         .title(&p.title)
-        .transient_for(parent)
-        .modal(true)
-        .default_width(440)
+        .default_width(420)
         .build();
     dialog.add_css_class("nexus");
+    dialog.add_css_class("prompt-window");
     dialog.init_layer_shell();
     dialog.set_namespace(Some("nexus-prompt"));
     dialog.set_layer(Layer::Overlay);
-    dialog.set_monitor(parent.monitor().as_ref());
     dialog.set_keyboard_mode(KeyboardMode::Exclusive);
     dialog.set_exclusive_zone(-1);
-    let content = page_box();
+    let content = vbox(16);
+    content.add_css_class("prompt");
     content.append(&heading(&p.title, &p.detail));
     let mut entries = vec![];
     for field in &p.fields {
-        content.append(&label(field, "row-title"));
+        let group = vbox(6);
+        group.append(&caption(field));
         let entry = gtk::Entry::new();
         entry.set_visibility(!matches!(field.as_str(), "Passphrase" | "Password" | "PIN"));
-        content.append(&entry);
+        group.append(&entry);
+        content.append(&group);
         entries.push((field.clone(), entry));
     }
-    let row = hbox(12);
+    let row = hbox(10);
+    row.set_halign(gtk::Align::End);
+    row.set_margin_top(6);
     let cancel = button(if p.display_only { "Close" } else { "Cancel" });
+    cancel.add_css_class("flat");
     row.append(&cancel);
     let accept = button(if p.fields.is_empty() {
         "Confirm"
@@ -969,6 +1165,16 @@ fn show_prompt(parent: &gtk::ApplicationWindow, ui: &Ui, p: &Prompt) -> gtk::Win
     }
     content.append(&row);
     dialog.set_child(Some(&content));
+    for (_, entry) in &entries {
+        let accept = accept.clone();
+        entry.connect_activate(move |_| accept.emit_clicked());
+    }
+    if let Some((_, entry)) = entries.first() {
+        let entry = entry.clone();
+        glib::idle_add_local_once(move || {
+            entry.grab_focus();
+        });
+    }
     let id = p.id;
     let answered = Rc::new(Cell::new(false));
     let ui2 = ui.clone();
@@ -992,6 +1198,17 @@ fn show_prompt(parent: &gtk::ApplicationWindow, ui: &Ui, p: &Prompt) -> gtk::Win
     });
     let d = dialog.clone();
     cancel.connect_clicked(move |_| d.close());
+    let key = gtk::EventControllerKey::new();
+    let d = dialog.clone();
+    key.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            d.close();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    dialog.add_controller(key);
     let ui = ui.clone();
     dialog.connect_close_request(move |_| {
         if !answered.get() {

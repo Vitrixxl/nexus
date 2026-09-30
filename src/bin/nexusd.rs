@@ -1,6 +1,7 @@
 use nexus_control::{backend::Backend, *};
 use std::{
-    io::Write,
+    io::{BufRead, BufReader, Write},
+    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -82,49 +83,48 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    _ => {
-                        let volume = backend::volume(false);
-                        let mic = backend::volume(true);
-                        let light = backend::brightness();
-                        let outputs = backend::audio_devices("sinks").unwrap_or_default();
-                        let inputs = backend::audio_devices("sources").unwrap_or_default();
-                        let default_output =
-                            backend::run("pactl", &["get-default-sink"]).unwrap_or_default();
-                        let default_input =
-                            backend::run("pactl", &["get-default-source"]).unwrap_or_default();
-                        let mut s = state.lock().unwrap();
-                        s.outputs = outputs;
-                        s.inputs = inputs;
-                        s.default_output = default_output;
-                        s.default_input = default_input;
-                        match volume {
-                            Ok((v, m)) => {
-                                s.volume = Some(v);
-                                s.muted = m;
-                                s.audio_error = None;
-                            }
-                            Err(e) => {
-                                s.volume = None;
-                                s.audio_error = Some(e.to_string());
-                            }
-                        }
-                        if let Ok((v, m)) = mic {
-                            s.microphone = Some(v);
-                            s.mic_muted = m;
-                        }
-                        match light {
-                            Ok(v) => {
-                                s.brightness = Some(v);
-                                s.brightness_error = None;
-                            }
-                            Err(e) => {
-                                s.brightness = None;
-                                s.brightness_error = Some(e.to_string());
+                    _ => poll_audio(&state),
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
+    }
+    // Application streams come and go with playback; follow them as they change.
+    {
+        let state = state.clone();
+        let (changed, pending) = std::sync::mpsc::channel::<()>();
+        thread::spawn(move || {
+            while pending.recv().is_ok() {
+                while pending.try_recv().is_ok() {}
+                if let Ok(streams) = backend::app_streams() {
+                    state.lock().unwrap().streams = streams;
+                }
+                // Coalesce event bursts, such as a volume drag.
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+        thread::spawn(move || {
+            loop {
+                let _ = changed.send(());
+                if let Ok(mut child) = Command::new("pactl")
+                    .arg("subscribe")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    if let Some(out) = child.stdout.take() {
+                        for line in BufReader::new(out).lines() {
+                            let Ok(line) = line else { break };
+                            if line.contains("sink-input") && changed.send(()).is_err() {
+                                return;
                             }
                         }
                     }
+                    let _ = child.kill();
+                    let _ = child.wait();
                 }
-                thread::sleep(Duration::from_secs(2));
+                thread::sleep(Duration::from_secs(1));
             }
         });
     }
@@ -169,7 +169,23 @@ fn main() -> anyhow::Result<()> {
                         accepted,
                     } => Reply::result(b.prompts.answer(id, values, accepted)),
                     Request::Action { op, target, value } => match mutations.try_lock() {
-                        Ok(_guard) => Reply::result(b.action(&op, &target, &value)),
+                        Ok(_guard) => {
+                            let result = b.action(&op, &target, &value);
+                            // Toggles are read back at once; sliders stream too fast for that.
+                            if result.is_ok()
+                                && matches!(
+                                    op.as_str(),
+                                    "mute"
+                                        | "mic-mute"
+                                        | "audio-output"
+                                        | "audio-input"
+                                        | "stream-mute"
+                                )
+                            {
+                                poll_audio(&state);
+                            }
+                            Reply::result(result)
+                        }
                         Err(_) => Reply::result(Err(anyhow::anyhow!(
                             "Another operation is in progress. Complete it or cancel its prompt first."
                         ))),
@@ -193,4 +209,48 @@ fn main() -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+fn poll_audio(state: &Mutex<Snapshot>) {
+    let volume = backend::volume(false);
+    let mic = backend::volume(true);
+    let light = backend::brightness();
+    let outputs = backend::audio_devices("sinks").unwrap_or_default();
+    let inputs = backend::audio_devices("sources").unwrap_or_default();
+    let streams = backend::app_streams();
+    let default_output = backend::run("pactl", &["get-default-sink"]).unwrap_or_default();
+    let default_input = backend::run("pactl", &["get-default-source"]).unwrap_or_default();
+    let mut s = state.lock().unwrap();
+    s.outputs = outputs;
+    s.inputs = inputs;
+    s.default_output = default_output;
+    s.default_input = default_input;
+    if let Ok(streams) = streams {
+        s.streams = streams;
+    }
+    match volume {
+        Ok((v, m)) => {
+            s.volume = Some(v);
+            s.muted = m;
+            s.audio_error = None;
+        }
+        Err(e) => {
+            s.volume = None;
+            s.audio_error = Some(e.to_string());
+        }
+    }
+    if let Ok((v, m)) = mic {
+        s.microphone = Some(v);
+        s.mic_muted = m;
+    }
+    match light {
+        Ok(v) => {
+            s.brightness = Some(v);
+            s.brightness_error = None;
+        }
+        Err(e) => {
+            s.brightness = None;
+            s.brightness_error = Some(e.to_string());
+        }
+    }
 }

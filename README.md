@@ -6,12 +6,12 @@ A complete, quiet shell for Hyprland. The bar, application launcher, settings pa
 - **Launcher** — click the center of the bar or press Super+Space. A search panel slides down from the bar; search desktop applications, move with ↑/↓ or Ctrl+N / Ctrl+P, open with Enter, dismiss with Escape or an outside click. Frequently used apps rise in the list.
 - **Wi-Fi** — ConnMan networks, signal, radio, scanning, connect/disconnect and forget. Credentials are requested through a D-Bus agent and kept out of command-line arguments, logs and Nexus settings.
 - **Bluetooth** — BlueZ discovery, pairing with PIN/passkey confirmation, connect/disconnect and forget.
-- **Sound** — PipeWire output and microphone levels, mute and device selection.
+- **Sound** — PipeWire output and microphone levels, mute and device selection, plus a level and mute switch for each application playing sound.
 - **Display** — backlight brightness with `brightnessctl`.
 - **Appearance** — light/dark, PNG/JPEG/WebP wallpaper picker, optional wallpaper-derived accent shared by the bar, launcher and settings.
 - **Power** — full-screen Sleep / Restart / Shutdown chooser, with confirmation. Uses login1 (elogind or systemd-logind), without shelling out to sudo.
 
-The UI is entirely in English. A singleton daemon keeps state and the application catalogue in memory before panels open. GIO monitors desktop entry changes; the shell caches rows and icons. Workspace changes arrive through Hyprland’s event socket rather than a polling timer. The shell stays running when a panel is dismissed. Opening the same page again toggles it closed. Escape dismisses the panel without stopping the bar.
+The UI is entirely in English. A singleton daemon keeps state and the application catalogue in memory before panels open. GIO monitors desktop entry changes; the shell caches rows and icons. Workspace changes arrive through Hyprland’s event socket rather than a polling timer. The shell stays running when a panel is dismissed. Opening the same page again toggles it closed. Escape dismisses the launcher, power chooser or control center without stopping the bar.
 
 ## Install
 
@@ -35,6 +35,7 @@ nexus-session             # daemon + complete shell; works with runit/OpenRC/sys
 nexus shell               # persistent bar, with panels initially closed
 nexus launcher            # toggle the integrated application launcher
 nexus launcher firefox    # open with a search query
+nexus control             # control center on the last page shown
 nexus wifi
 nexus bluetooth
 nexus sound
@@ -44,7 +45,7 @@ nexus power               # full-screen power chooser
 nexus status             # JSON diagnostics, without passwords
 ```
 
-Hyprland Lua startup: `hl.exec_cmd("~/.local/bin/nexus-session")` inside the `hyprland.start` handler. The dotfiles replace Fuzzel with the integrated launcher on `Super+D` / `Super+Space`, and add `Super+W` for Wi-Fi, `Super+Alt+N/B/A/P` for Nexus / Bluetooth / Sound / Power and `Ctrl+Alt+Delete` for Power. Hyprland's live and repository configs remain separate files.
+Hyprland Lua startup: `hl.exec_cmd("~/.local/bin/nexus-session")` inside the `hyprland.start` handler. The dotfiles replace Fuzzel with the integrated launcher on `Super+D` / `Super+Space`, and add `Super+N` for the control center, `Super+W` for Wi-Fi, `Super+Alt+N/B/A/P` for Nexus / Bluetooth / Sound / Power and `Ctrl+Alt+Delete` for Power. Hyprland's live and repository configs remain separate files.
 
 On systemd desktops you can instead enable the optional service with `systemctl --user enable --now nexusd`. Do not enable both startup methods unnecessarily; a runtime file lock prevents duplicate daemons. Restart the daemon after updating binaries. On runit/OpenRC it is a desktop-session process, not a root service.
 
@@ -72,7 +73,7 @@ Wallpaper colors are opt-in. Images are quantized into color buckets to obtain a
 
 ## Architecture and limits
 
-`nexusd` talks to ConnMan, BlueZ and login1 over the system bus via `zbus`. Audio and backlight helpers run with argument arrays and bounded execution time. Independent background pollers isolate each subsystem. The shell uses GTK4 layer-shell surfaces: a reserved top bar, a transparent click-dismiss backdrop and an animated panel attached to its center. Application discovery and launching use GIO desktop entries (including their icons and launch flags), without interpreting search text as commands. Usage history is stored locally in `$XDG_STATE_HOME/nexus/launcher.json`.
+`nexusd` talks to ConnMan, BlueZ and login1 over the system bus via `zbus`. Audio and backlight helpers run with argument arrays and bounded execution time. Independent background pollers isolate each subsystem. The shell uses GTK4 layer-shell surfaces for the reserved top bar, the launcher panel that drops from its center and the full-screen power chooser. The Wi-Fi, Bluetooth, Sound, Display and Appearance pages live in a separate control center window (class `nexus`, title `Nexus`); on Hyprland, float it with a window rule such as `hl.window_rule({ name = "nexus-control-float", match = { class = "^(nexus)$", title = "^(Nexus)$" }, float = true, size = "900 640" })`. Application discovery and launching use GIO desktop entries (including their icons and launch flags), without interpreting search text as commands. Usage history is stored locally in `$XDG_STATE_HOME/nexus/launcher.json`.
 
 The GUI communicates over newline-delimited JSON on a mode-0600 socket in a mode-0700 `$XDG_RUNTIME_DIR/nexus` directory. Pairing and credential prompts expire after 90 seconds. All processes run as the desktop user.
 

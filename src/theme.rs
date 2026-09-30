@@ -82,54 +82,125 @@ pub fn css(s: &Settings) -> String {
     format!(
         r#"
 @define-color nexus_bg {bg}; @define-color nexus_surface {surface}; @define-color nexus_fg {fg}; @define-color nexus_muted {muted}; @define-color nexus_accent {accent};
-window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', 'Inter', sans-serif; }}
-.nexus .sidebar {{ background: @nexus_surface; padding: 24px 14px; }}
-.nexus .brand {{ font-size: 25px; font-weight: 700; letter-spacing: -1px; }}
-.nexus .eyebrow {{ font-size: 10px; font-weight: 600; letter-spacing: 2px; color: @nexus_muted; }}
-.nexus .title {{ font-size: 30px; font-weight: 600; letter-spacing: -1px; }}
+window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', 'Inter', sans-serif; font-size: 14px; }}
 .nexus .muted {{ color: @nexus_muted; }}
-.nexus button {{ border-radius: 10px; padding: 10px 14px; background: @nexus_surface; color: @nexus_fg; border: none; box-shadow: none; }}
-.nexus button:hover {{ background: alpha(@nexus_accent, 0.20); }}
-.nexus button.suggested-action, .nexus .nav-active {{ background: @nexus_accent; color: #18211c; }}
-.nexus .card {{ background: @nexus_surface; border-radius: 14px; padding: 18px; }}
+.nexus .caption {{ font-size: 12px; }}
+.nexus .title {{ font-size: 26px; font-weight: 650; letter-spacing: -0.5px; }}
 .nexus .row-title {{ font-weight: 600; }}
+.nexus .eyebrow {{ font-size: 10px; font-weight: 600; letter-spacing: 2px; color: @nexus_muted; }}
 .nexus .error {{ color: #d7786d; }}
-.nexus entry {{ border-radius: 9px; padding: 10px; }}
-.nexus scale highlight, .nexus switch:checked {{ background: @nexus_accent; }}
-.nexus .power-tile {{ padding: 40px 20px; min-width: 145px; font-size: 20px; }}
-.nexus .power-icon {{ font-size: 44px; }}
-.nexus .danger {{ color: #e29990; }}
+.nexus .banner {{ background: alpha(#d7786d, 0.12); border-radius: 10px; padding: 10px 14px; }}
+.nexus .empty-state {{ color: @nexus_muted; padding: 36px 0; }}
+
+.nexus button {{ min-height: 0; min-width: 0; border-radius: 10px; padding: 8px 14px; background: alpha(@nexus_fg, 0.07); color: @nexus_fg; border: none; box-shadow: none; text-shadow: none; outline: none; }}
+.nexus button:hover {{ background: alpha(@nexus_fg, 0.12); }}
+.nexus button:active {{ background: alpha(@nexus_fg, 0.17); }}
+.nexus button:disabled {{ opacity: 0.45; }}
+.nexus button:focus-visible {{ outline: 2px solid alpha(@nexus_accent, 0.7); outline-offset: -2px; }}
+.nexus button.flat {{ background: transparent; color: @nexus_muted; }}
+.nexus button.flat:hover {{ background: alpha(@nexus_fg, 0.07); color: @nexus_fg; }}
+.nexus button.suggested-action {{ background: @nexus_accent; color: #16201b; font-weight: 600; }}
+.nexus button.suggested-action:hover {{ background: shade(@nexus_accent, 1.08); }}
+.nexus button.destructive-action {{ background: #c4655a; color: #ffffff; font-weight: 600; }}
+.nexus button.destructive-action:hover {{ background: #d27468; }}
+
+.control-center .sidebar {{ background: @nexus_surface; padding: 10px 12px 12px; border-right: 1px solid alpha(@nexus_fg, 0.05); }}
+.control-center .sidebar-section {{ font-size: 12px; font-weight: 600; color: @nexus_muted; padding: 18px 12px 8px; }}
+.control-center separator {{ margin: 0 8px; min-height: 1px; background: alpha(@nexus_fg, 0.07); }}
+.nexus button.nav {{ background: transparent; padding: 9px 10px; border-radius: 12px; color: alpha(@nexus_fg, 0.85); font-size: 15px; font-weight: 500; }}
+.nexus button.nav:hover {{ background: alpha(@nexus_fg, 0.05); color: @nexus_fg; }}
+.nexus button.nav:focus-visible {{ outline: none; background: alpha(@nexus_fg, 0.06); }}
+.nexus button.nav .nav-icon {{ background: alpha(@nexus_fg, 0.07); color: alpha(@nexus_fg, 0.85); border-radius: 10px; min-width: 36px; min-height: 36px; }}
+.nexus button.nav .nav-detail {{ color: @nexus_muted; font-size: 13px; font-weight: 400; }}
+.nexus button.nav.nav-active {{ background: alpha(@nexus_fg, 0.08); color: @nexus_fg; font-weight: 600; }}
+.nexus button.nav.nav-active .nav-icon {{ background: @nexus_accent; color: #16201b; }}
+.nexus button.nav.power-nav:hover .nav-icon {{ background: alpha(#d7786d, 0.2); color: #e29990; }}
+.control-center .status {{ font-size: 12px; padding: 0 32px 16px; }}
+
+.nexus .card {{ background: @nexus_surface; border-radius: 14px; padding: 14px 16px; }}
+.nexus .row-icon {{ color: @nexus_muted; }}
+.nexus button.stream-mute {{ padding: 6px; }}
+.nexus button.stream-mute:checked {{ background: alpha(#d7786d, 0.16); color: #e29990; }}
+.nexus .list-row.active .row-icon {{ color: @nexus_accent; }}
+.nexus .segmented {{ background: alpha(@nexus_fg, 0.07); border-radius: 10px; padding: 3px; }}
+.nexus .segmented button {{ background: transparent; padding: 6px 16px; border-radius: 8px; color: @nexus_muted; }}
+.nexus .segmented button:hover {{ color: @nexus_fg; }}
+.nexus .segmented button:checked {{ background: @nexus_accent; color: #16201b; font-weight: 600; }}
+.nexus .wallpaper-frame {{ border-radius: 10px; background: alpha(@nexus_fg, 0.05); }}
+
+.nexus switch {{ background: alpha(@nexus_fg, 0.16); border: none; border-radius: 999px; padding: 3px; box-shadow: none; outline: none; }}
+.nexus switch:checked {{ background: @nexus_accent; }}
+.nexus switch image {{ color: transparent; }}
+.nexus switch > slider {{ background: #ffffff; border: none; border-radius: 999px; min-width: 18px; min-height: 18px; margin: 0; box-shadow: 0 1px 2px alpha(black, 0.3); }}
+.nexus switch:disabled {{ opacity: 0.45; }}
+
+.nexus scale {{ padding: 8px 0; }}
+.nexus scale > trough {{ background: alpha(@nexus_fg, 0.12); border: none; border-radius: 999px; min-height: 6px; outline: none; }}
+.nexus scale > trough > highlight {{ background: @nexus_accent; border: none; border-radius: 999px; }}
+.nexus scale > trough > slider {{ background: #ffffff; border: none; border-radius: 999px; min-width: 18px; min-height: 18px; margin: -6px; box-shadow: 0 1px 3px alpha(black, 0.35); }}
+.nexus scale > value {{ color: @nexus_muted; font-size: 12px; min-width: 40px; margin-left: 12px; font-feature-settings: "tnum"; }}
+.nexus scale:disabled {{ opacity: 0.45; }}
+
+.nexus dropdown > button {{ background: alpha(@nexus_fg, 0.06); padding: 8px 12px; }}
+.nexus popover > contents {{ background: @nexus_surface; color: @nexus_fg; border-radius: 12px; padding: 6px; border: 1px solid alpha(@nexus_fg, 0.08); box-shadow: 0 8px 24px alpha(black, 0.35); }}
+.nexus popover > arrow {{ background: @nexus_surface; border: 1px solid alpha(@nexus_fg, 0.08); }}
+.nexus popover listview {{ background: transparent; }}
+.nexus popover listview > row {{ border-radius: 8px; padding: 8px 10px; }}
+.nexus popover listview > row:hover {{ background: alpha(@nexus_fg, 0.07); }}
+.nexus popover listview > row:selected {{ background: alpha(@nexus_accent, 0.18); color: @nexus_fg; }}
+
+.nexus entry {{ background: alpha(@nexus_fg, 0.07); color: @nexus_fg; border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; box-shadow: none; outline: none; }}
+.nexus entry:focus-within {{ border-color: alpha(@nexus_accent, 0.8); }}
+.nexus scrollbar {{ background: transparent; border: none; }}
+.nexus scrollbar slider {{ background: alpha(@nexus_fg, 0.2); border: none; border-radius: 999px; min-width: 4px; min-height: 24px; }}
 .nexus separator {{ background: alpha(@nexus_muted, 0.15); }}
+
 window.shell-overlay {{ background: transparent; }}
-window.power-overlay {{ background: alpha(#080d0a, 0.75); }}
-.shell-panel {{ background: @nexus_bg; border-radius: 0 0 22px 22px; border: none; box-shadow: none; }}
-.power-overlay .shell-panel {{ border-radius: 22px; }}
+.panel-fillet {{ color: @nexus_bg; }}
+window.power-overlay {{ background: alpha(#080d0a, 0.72); }}
+.shell-panel {{ background: @nexus_bg; border-radius: 0 0 22px 22px; border: none; box-shadow: 0 24px 44px -12px alpha(black, 0.7), 0 8px 16px -8px alpha(black, 0.45); }}
+.power-overlay .shell-panel {{ border-radius: 22px; border: 1px solid alpha(@nexus_fg, 0.06); box-shadow: 0 24px 48px -12px alpha(black, 0.6); }}
+.nexus .power-page {{ padding: 36px 40px 24px; min-width: 520px; }}
+.nexus button.power-tile {{ padding: 28px 18px 22px; font-size: 15px; font-weight: 500; border-radius: 16px; background: alpha(@nexus_fg, 0.06); }}
+.nexus button.power-tile:hover {{ background: alpha(@nexus_fg, 0.1); }}
+.nexus button.power-tile.selected {{ background: alpha(@nexus_accent, 0.2); }}
+.nexus button.power-tile.danger {{ color: #e29990; }}
+.nexus button.power-tile.danger.selected {{ background: alpha(#d7786d, 0.18); }}
+
+window.prompt-window {{ background: transparent; }}
+.nexus .prompt {{ background: @nexus_bg; border-radius: 18px; padding: 24px; border: 1px solid alpha(@nexus_fg, 0.1); }}
+.nexus .prompt .title {{ font-size: 20px; }}
+
 .nexus-bar {{ background: @nexus_bg; border-radius: 12px; border: none; box-shadow: none; }}
-.nexus-bar button {{ padding: 3px 10px; min-height: 24px; margin: 2px 0; font-size: 12px; background: transparent; border-radius: 8px; }}
-.nexus-bar .bar-brand {{ color: @nexus_accent; font-size: 14px; font-weight: 700; padding-left: 15px; }}
-.nexus-bar .bar-search {{ background: @nexus_surface; padding: 3px 16px; border-radius: 10px; }}
+.nexus-bar .bar-content {{ padding: 4px; min-height: 26px; }}
+.nexus-bar button {{ padding: 0 10px; min-height: 26px; margin: 0 1px; font-size: 12px; background: transparent; border-radius: 8px; }}
+.nexus-bar button:hover {{ background: alpha(@nexus_fg, 0.08); }}
+.nexus-bar button.bar-static:hover {{ background: transparent; }}
+.nexus-bar .bar-brand {{ color: @nexus_accent; font-size: 14px; font-weight: 700; padding: 0 12px; }}
+.nexus-bar .bar-search {{ background: @nexus_surface; padding: 0 16px; border-radius: 8px; }}
+.nexus-bar .bar-search:hover {{ background: shade(@nexus_surface, 1.15); }}
 .nexus-bar .bar-hint {{ color: @nexus_muted; font-size: 10px; }}
 .nexus-bar .bar-clock {{ font-size: 12px; }}
-.nexus-bar .bar-power {{ color: @nexus_accent; padding-right: 15px; font-size: 17px; }}
-.nexus-bar .workspace {{ color: @nexus_muted; padding: 3px 8px; }}
+.nexus-bar .bar-power {{ color: @nexus_accent; padding: 0 12px; }}
+.nexus-bar .workspace {{ color: @nexus_muted; padding: 0; min-width: 26px; }}
 .nexus-bar .workspace.active {{ background: @nexus_surface; color: @nexus_accent; }}
 .launcher .search-row {{ padding: 20px 22px 16px; color: @nexus_accent; }}
 .nexus .launcher entry, .nexus .launcher entry:focus-within {{ background: transparent; border: none; box-shadow: none; padding: 4px; font-size: 18px; color: @nexus_fg; }}
-
 .launcher .keycap {{ font-size: 10px; color: @nexus_muted; border: none; border-radius: 5px; padding: 4px 6px; }}
 .launcher .app-results {{ background: transparent; padding: 4px 10px 6px; }}
-.launcher .app-results row {{ border-radius: 12px; background: transparent; color: @nexus_fg; }}
-.launcher .app-results row:selected {{ background: alpha(@nexus_accent,0.18); }}
+.launcher .app-results row {{ border-radius: 12px; background: transparent; color: @nexus_fg; outline: none; }}
+.launcher, .launcher *, .nexus button.nav, .nexus button.nav * {{ transition: none; }}
 .launcher .app-results row:hover {{ background: alpha(@nexus_accent,0.10); }}
-.launcher .app-row {{ padding: 11px 14px; }}
+.launcher .app-results row:selected {{ background: alpha(@nexus_accent,0.18); }}
+.launcher .app-row {{ padding: 8px 12px; }}
 .launcher .launch-arrow {{ color: transparent; font-size: 13px; }}
 .launcher row:selected .launch-arrow {{ color: @nexus_accent; }}
-.launcher .app-name {{ font-size: 14px; font-weight: 500; }}
+.launcher .app-name {{ font-size: 15px; font-weight: 600; }}
+.launcher .app-description {{ font-size: 12px; color: @nexus_muted; }}
 .launcher .results-heading {{ padding: 0 24px 6px; font-size: 10px; }}
 .launcher .empty-results {{ padding: 24px; }}
 .launcher row, .launcher entry, .launcher entry:focus-within {{ border: none; outline: none; }}
 .launcher .launcher-footer {{ padding: 10px 22px 16px; font-size: 11px; }}
-
 "#,
         accent = s.accent
     )

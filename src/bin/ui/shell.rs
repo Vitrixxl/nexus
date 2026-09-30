@@ -1,19 +1,56 @@
-use super::super::{hbox, label};
+use super::super::{hbox, label, signal_icon};
 use gtk::{glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nexus_control::Snapshot;
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::RefCell, rc::Rc};
 
 pub struct Surface {
     pub window: gtk::ApplicationWindow,
     pub content: gtk::Stack,
     pub revealer: gtk::Revealer,
-    generation: Cell<u64>,
+    clip: gtk::Box,
+    corners: [gtk::Widget; 4],
     pub page: RefCell<String>,
+}
+const FILLET: i32 = 14;
+/// Bottom edge of the bar (8px margin + 34px height), less 1px so the panel joins it.
+const BAR_BOTTOM: i32 = 41;
+/// Share of the monitor width left empty on each side of the bar.
+const BAR_INSET: f64 = 0.15;
+/// Room around the panel for its drop shadow; margins are not part of the input
+/// target, so clicks there still reach the dismissing backdrop.
+const SHADOW: i32 = 64;
+/// Concave corner joining the bar's bottom edge to the side of a dropped panel,
+/// so the panel flows out of the bar instead of meeting it at a right angle.
+fn fillet(right: bool) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.add_css_class("panel-fillet");
+    area.set_content_width(FILLET);
+    area.set_content_height(FILLET);
+    area.set_valign(gtk::Align::Start);
+    area.set_draw_func(move |area, cr, w, h| {
+        let (w, h) = (f64::from(w), f64::from(h));
+        let color = area.color();
+        cr.set_source_rgba(
+            f64::from(color.red()),
+            f64::from(color.green()),
+            f64::from(color.blue()),
+            f64::from(color.alpha()),
+        );
+        // Square minus a quarter disc centred on the outer bottom corner.
+        use std::f64::consts::{FRAC_PI_2, PI};
+        cr.move_to(0., 0.);
+        cr.line_to(w, 0.);
+        if right {
+            cr.arc_negative(w, h, w, -FRAC_PI_2, -PI);
+        } else {
+            cr.line_to(w, h);
+            cr.arc_negative(0., h, w, 0., -FRAC_PI_2);
+        }
+        cr.close_path();
+        let _ = cr.fill();
+    });
+    area
 }
 impl Surface {
     pub fn new(app: &gtk::Application) -> Rc<Self> {
@@ -30,6 +67,7 @@ impl Surface {
             window.set_anchor(edge, true);
         }
         window.set_exclusive_zone(-1);
+        window.set_margin(Edge::Top, BAR_BOTTOM);
         window.set_keyboard_mode(KeyboardMode::Exclusive);
         let overlay = gtk::Overlay::new();
         let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -44,17 +82,53 @@ impl Surface {
         let revealer = gtk::Revealer::new();
         revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
         revealer.set_transition_duration(120);
-        revealer.set_halign(gtk::Align::Center);
-        revealer.set_valign(gtk::Align::Start);
-        revealer.set_margin_top(41);
-        revealer.set_child(Some(&content));
-        overlay.add_overlay(&revealer);
+        // The fillets are overlays so they paint above the panel's shadow.
+        let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let gutters = [
+            gtk::Box::new(gtk::Orientation::Horizontal, 0),
+            gtk::Box::new(gtk::Orientation::Horizontal, 0),
+        ];
+        body.append(&gutters[0]);
+        body.append(&content);
+        body.append(&gutters[1]);
+        let panel = gtk::Overlay::new();
+        panel.set_child(Some(&body));
+        let fillets = [fillet(false), fillet(true)];
+        for (gutter, (corner, align)) in gutters
+            .iter()
+            .zip(fillets.iter().zip([gtk::Align::Start, gtk::Align::End]))
+        {
+            gutter.set_width_request(FILLET);
+            corner.set_halign(align);
+            panel.add_overlay(corner);
+        }
+        panel.set_margin_start(SHADOW);
+        panel.set_margin_end(SHADOW);
+        panel.set_margin_bottom(SHADOW);
+        revealer.set_child(Some(&panel));
+        let [left, right] = fillets;
+        let [gutter_left, gutter_right] = gutters;
+        let corners = [
+            left.upcast(),
+            right.upcast(),
+            gutter_left.upcast(),
+            gutter_right.upcast(),
+        ];
+        // The revealer does not clip its sliding child here, so the panel would be
+        // drawn over the bar while it animates; this box cuts it at the bar's edge.
+        let clip = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        clip.set_overflow(gtk::Overflow::Hidden);
+        clip.set_halign(gtk::Align::Center);
+        clip.set_valign(gtk::Align::Start);
+        clip.append(&revealer);
+        overlay.add_overlay(&clip);
         window.set_child(Some(&overlay));
         let this = Rc::new(Self {
             window,
             content,
             revealer,
-            generation: Cell::new(0),
+            clip,
+            corners,
             page: RefCell::new(String::new()),
         });
         let weak = Rc::downgrade(&this);
@@ -88,21 +162,21 @@ impl Surface {
         this.window.add_controller(key);
         this
     }
+    pub fn is_open(&self, page: &str) -> bool {
+        self.window.is_visible() && self.page.borrow().as_str() == page
+    }
+    /// Closes at once. Animating the close (slide or fade) made GTK paint the
+    /// panel over the bar for a few frames.
     pub fn hide(self: &Rc<Self>) {
-        self.generation.set(self.generation.get() + 1);
-        let generation = self.generation.get();
         self.window.set_keyboard_mode(KeyboardMode::None);
+        self.window.set_visible(false);
+        self.page.borrow_mut().clear();
+        // Collapse without animation so the next open slides in again.
+        self.revealer
+            .set_transition_type(gtk::RevealerTransitionType::None);
         self.revealer.set_reveal_child(false);
-        let s = self.clone();
-        glib::timeout_add_local_once(Duration::from_millis(130), move || {
-            if s.generation.get() == generation {
-                s.window.set_visible(false);
-                s.page.borrow_mut().clear();
-            }
-        });
     }
     pub fn show(self: &Rc<Self>, page: &str, monitor: Option<&gtk::gdk::Monitor>) {
-        self.generation.set(self.generation.get() + 1);
         if let Some(monitor) = monitor
             && self.window.monitor().as_ref() != Some(monitor)
         {
@@ -111,39 +185,31 @@ impl Surface {
         }
         *self.page.borrow_mut() = page.into();
         let power = page == "power";
+        for corner in &self.corners {
+            corner.set_visible(!power);
+        }
+        // The launcher surface starts under the bar, so nothing it renders (even a
+        // stale frame) can cover the bar; the power chooser dims the whole screen.
         if power {
             self.window.add_css_class("power-overlay");
-            self.revealer.set_valign(gtk::Align::Center);
-            self.revealer.set_margin_top(0);
+            self.window.set_margin(Edge::Top, 0);
+            self.clip.set_valign(gtk::Align::Center);
+            self.clip.set_margin_top(SHADOW);
         } else {
             self.window.remove_css_class("power-overlay");
-            self.revealer.set_valign(gtk::Align::Start);
-            self.revealer.set_margin_top(41);
+            self.window.set_margin(Edge::Top, BAR_BOTTOM);
+            self.clip.set_valign(gtk::Align::Start);
+            self.clip.set_margin_top(0);
         }
-        self.content.set_visible_child_name(if page == "launcher" {
-            "launcher"
-        } else {
-            "settings"
-        });
+        self.content.set_visible_child_name(page);
         self.window.set_keyboard_mode(KeyboardMode::Exclusive);
         self.window.present();
         let s = self.clone();
         glib::idle_add_local_once(move || {
+            s.revealer
+                .set_transition_type(gtk::RevealerTransitionType::SlideDown);
+            s.revealer.set_transition_duration(120);
             s.revealer.set_reveal_child(true);
-            if let Some(surface) = s.window.surface() {
-                let top = if s.page.borrow().as_str() == "power" {
-                    0
-                } else {
-                    42
-                };
-                let rect = gtk::cairo::RectangleInt::new(
-                    0,
-                    top,
-                    surface.width(),
-                    (surface.height() - top).max(1),
-                );
-                surface.set_input_region(&gtk::cairo::Region::create_rectangle(&rect));
-            }
         });
     }
 }
@@ -226,11 +292,13 @@ impl Bars {
             window.set_anchor(edge, true);
         }
         window.set_margin(Edge::Top, 8);
-        window.set_margin(Edge::Left, 12);
-        window.set_margin(Edge::Right, 12);
+        // A little narrower than the screen and centred.
+        let side = ((f64::from(monitor.geometry().width()) * BAR_INSET).round() as i32).max(12);
+        window.set_margin(Edge::Left, side);
+        window.set_margin(Edge::Right, side);
         window.auto_exclusive_zone_enable();
         let center = gtk::CenterBox::new();
-        center.set_height_request(34);
+        center.add_css_class("bar-content");
         let left = hbox(4);
         let brand = self.button(monitor, "nexus", "Appearance", "appearance");
         brand.add_css_class("bar-brand");
@@ -257,7 +325,7 @@ impl Bars {
             "Brightness",
             "display",
         );
-        let battery = self.indicator(monitor, "battery-symbolic", "Battery", "power");
+        let battery = self.indicator(monitor, "battery-symbolic", "Battery", "");
         let power = self.indicator(
             monitor,
             "system-shutdown-symbolic",
@@ -265,6 +333,9 @@ impl Bars {
             "power",
         );
         power.button.add_css_class("bar-power");
+        // The battery only reports its level; it opens nothing.
+        battery.button.add_css_class("bar-static");
+        battery.button.set_focusable(false);
         for b in [&wifi, &bluetooth, &sound, &brightness, &battery, &power] {
             right.append(&b.button);
         }
@@ -293,9 +364,11 @@ impl Bars {
     ) -> gtk::Button {
         let b = gtk::Button::with_label(text);
         b.set_tooltip_text(Some(tooltip));
-        let open = self.open.clone();
-        let monitor = monitor.clone();
-        b.connect_clicked(move |_| open(page, Some(&monitor)));
+        if !page.is_empty() {
+            let open = self.open.clone();
+            let monitor = monitor.clone();
+            b.connect_clicked(move |_| open(page, Some(&monitor)));
+        }
         b
     }
     fn indicator(
@@ -347,10 +420,7 @@ impl Bars {
                 .iter()
                 .find(|n| matches!(n.state.as_str(), "ready" | "online"));
             bar.wifi.icon.set_icon_name(Some(match network {
-                Some(n) if n.signal >= 75 => "network-wireless-signal-excellent-symbolic",
-                Some(n) if n.signal >= 50 => "network-wireless-signal-good-symbolic",
-                Some(n) if n.signal >= 25 => "network-wireless-signal-ok-symbolic",
-                Some(_) => "network-wireless-signal-weak-symbolic",
+                Some(n) => signal_icon(n.signal),
                 None if s.wifi => "network-wireless-offline-symbolic",
                 None => "network-wireless-disabled-symbolic",
             }));

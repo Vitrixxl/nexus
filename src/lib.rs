@@ -37,6 +37,16 @@ pub struct AudioDevice {
     pub name: String,
     pub description: String,
 }
+/// Playback stream of one application (a PulseAudio sink input).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct AppStream {
+    pub id: u32,
+    pub name: String,
+    pub detail: String,
+    pub icon: Option<String>,
+    pub volume: u8,
+    pub muted: bool,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Prompt {
     pub id: u64,
@@ -61,6 +71,8 @@ pub struct Snapshot {
     pub inputs: Vec<AudioDevice>,
     pub default_output: String,
     pub default_input: String,
+    #[serde(default)]
+    pub streams: Vec<AppStream>,
     pub brightness: Option<u8>,
     pub audio_error: Option<String>,
     pub brightness_error: Option<String>,

@@ -526,6 +526,34 @@ impl Backend {
                     ],
                 )?;
             }
+            "stream-volume" | "stream-mute" => {
+                let id = target
+                    .parse::<u32>()
+                    .context("Invalid application stream")?;
+                if !app_streams()?.iter().any(|s| s.id == id) {
+                    bail!("This application is no longer playing sound");
+                }
+                let id = id.to_string();
+                if op == "stream-volume" {
+                    run(
+                        "pactl",
+                        &[
+                            "set-sink-input-volume",
+                            &id,
+                            &format!("{}%", percent(value)?),
+                        ],
+                    )?;
+                } else {
+                    run(
+                        "pactl",
+                        &[
+                            "set-sink-input-mute",
+                            &id,
+                            if parse_bool(value)? { "1" } else { "0" },
+                        ],
+                    )?;
+                }
+            }
             "brightness" => {
                 let n = percent(value)?.max(1);
                 run(
@@ -590,6 +618,53 @@ pub fn audio_devices(kind: &str) -> Result<Vec<AudioDevice>> {
             Some(AudioDevice {
                 name: v["name"].as_str()?.into(),
                 description: v["description"].as_str().unwrap_or("Audio device").into(),
+            })
+        })
+        .collect())
+}
+/// Application playback streams, with the average level across channels.
+pub fn app_streams() -> Result<Vec<AppStream>> {
+    let out = run("pactl", &["--format=json", "list", "sink-inputs"])?;
+    let json: Vec<serde_json::Value> = serde_json::from_str(&out)?;
+    Ok(json
+        .iter()
+        .filter_map(|v| {
+            let props = &v["properties"];
+            let prop = |key: &str| {
+                props[key]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            let binary = prop("application.process.binary");
+            let name = prop("application.name")
+                .or_else(|| binary.clone())
+                .unwrap_or_else(|| "Application".into());
+            let levels: Vec<f64> = v["volume"]
+                .as_object()?
+                .values()
+                .filter_map(|c| {
+                    c["value_percent"]
+                        .as_str()?
+                        .trim_end_matches('%')
+                        .parse()
+                        .ok()
+                })
+                .collect();
+            let level = if levels.is_empty() {
+                100.
+            } else {
+                levels.iter().sum::<f64>() / levels.len() as f64
+            };
+            Some(AppStream {
+                id: u32::try_from(v["index"].as_u64()?).ok()?,
+                detail: prop("media.name")
+                    .filter(|m| *m != name)
+                    .unwrap_or_default(),
+                icon: prop("application.icon_name").or(binary.map(|b| b.to_lowercase())),
+                name,
+                volume: level.round().clamp(0., 100.) as u8,
+                muted: v["mute"].as_bool().unwrap_or(false),
             })
         })
         .collect())
