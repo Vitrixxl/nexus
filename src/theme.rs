@@ -274,6 +274,23 @@ window.prompt-window {{ background: transparent; }}
 .nexus .prompt {{ background: @nexus_bg; border-radius: 18px; padding: 24px; border: 1px solid alpha(@nexus_fg, 0.1); }}
 .nexus .prompt .title {{ font-size: 20px; }}
 
+window.notification-popups {{ background: transparent; }}
+.notification-popups .notification {{ background: @nexus_bg; border: 1px solid alpha(@nexus_fg, 0.08); border-radius: 16px; padding: 12px 14px 14px; margin: 4px 12px 12px; box-shadow: 0 14px 30px -12px @nexus_shadow, 0 4px 10px -6px alpha(@nexus_shadow, 0.6); }}
+.notification-center {{ padding: 20px 18px 14px; }}
+.notification-center .center-title {{ font-size: 18px; font-weight: 650; }}
+.notification-center .notification {{ background: @nexus_surface; border: 1px solid alpha(@nexus_fg, {border}); border-radius: 14px; padding: 12px 14px 14px; }}
+.notification-center .empty-state {{ padding: 28px 0; }}
+.nexus .notification.critical {{ border-color: alpha(@nexus_error, 0.55); }}
+.nexus .notification .app-name {{ font-size: 12px; font-weight: 600; color: @nexus_muted; }}
+.nexus .notification .summary {{ font-weight: 600; }}
+.nexus .notification .body {{ color: alpha(@nexus_fg, 0.8); }}
+.nexus .notification label link {{ color: @nexus_accent_fg; }}
+.nexus .notification-image {{ border-radius: 10px; }}
+.nexus button.notification-close {{ padding: 3px; border-radius: 999px; }}
+.nexus .notification .actions button {{ padding: 6px 12px; font-size: 13px; }}
+.nexus .notification progressbar > trough {{ background: alpha(@nexus_fg, 0.12); border: none; border-radius: 999px; min-height: 6px; }}
+.nexus .notification progressbar > trough > progress {{ background: @nexus_accent; border: none; border-radius: 999px; min-width: 0; min-height: 6px; margin: 0; }}
+
 window.nexus.nexus-bar {{ background: transparent; }}
 .nexus-bar .bar-body {{ background: @nexus_bg; border-radius: 0 0 14px 14px; }}
 .nexus-bar .bar-content {{ padding: 4px 8px; min-height: 26px; }}

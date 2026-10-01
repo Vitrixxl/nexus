@@ -4,6 +4,7 @@ A complete, quiet shell for Hyprland. The bar, application launcher, settings pa
 
 - **Bar** — workspaces, clock and stateful Wi-Fi, Bluetooth, sound, brightness, battery and power icons. One bar per monitor, with hotplug support.
 - **Launcher** — click the center of the bar or press Super+Space. A search panel slides down from the bar; search desktop applications, move with ↑/↓ or Ctrl+N / Ctrl+P, open with Enter, dismiss with Escape or an outside click. Frequently used apps rise in the list.
+- **Notifications** — Nexus is the desktop's notification server (`org.freedesktop.Notifications`). Popups stack in the top-right corner below the bar, with images, body markup, links, progress and action buttons; clicking one runs its default action, hovering holds it on screen. The bell in the bar counts live notifications and drops a list with Do not disturb (only critical notifications pop up) and Clear all.
 - **Wi-Fi** — ConnMan networks, signal, radio, scanning, connect/disconnect and forget. Credentials are requested through a D-Bus agent and kept out of command-line arguments, logs and Nexus settings.
 - **Bluetooth** — BlueZ discovery, pairing with PIN/passkey confirmation, connect/disconnect and forget.
 - **Sound** — PipeWire output and microphone levels, mute and device selection, plus a level and mute switch for each application playing sound.
@@ -42,6 +43,7 @@ nexus sound
 nexus display
 nexus appearance
 nexus power               # full-screen power chooser
+nexus notifications       # toggle the notification list
 nexus status             # JSON diagnostics, without passwords
 ```
 
@@ -83,6 +85,8 @@ Wallpaper colors are opt-in. Images are quantized into color buckets to obtain a
 
 `nexusd` talks to ConnMan, BlueZ and login1 over the system bus via `zbus`. Audio and backlight helpers run with argument arrays and bounded execution time. Independent background pollers isolate each subsystem. The shell uses GTK4 layer-shell surfaces for the reserved top bar, the launcher panel that drops from its center and the full-screen power chooser. The Wi-Fi, Bluetooth, Sound, Display and Appearance pages live in a separate control center window (class `io.github.vitrixxl.Nexus`, title `Nexus`); on Hyprland, float it with a window rule such as `hl.window_rule({ name = "nexus-control-float", match = { class = "^(io\\.github\\.vitrixxl\\.Nexus)$", title = "^(Nexus)$" }, float = true, size = "900 640" })`. Application discovery and launching use GIO desktop entries (including their icons and launch flags), without interpreting search text as commands. Usage history is stored locally in `$XDG_STATE_HOME/nexus/launcher.json`.
 
+The notification server runs in the shell process on the session bus GLib finds, so it works in sessions that only autolaunch the bus. It claims the name as the shell starts, before GTK, so an early notification does not get another daemon activated. If another notification daemon (mako, dunst, swaync) already owns the name, Nexus waits and takes over when it exits; stop it, and do not autostart it alongside Nexus. Notifications live in memory: up to 100 stay in the list until dismissed, closed by their application or the shell restarts. Popups that time out leave the notification in the list, still actionable, except transient ones. Do not disturb lasts for the session.
+
 The GUI communicates over newline-delimited JSON on a mode-0600 socket in a mode-0700 `$XDG_RUNTIME_DIR/nexus` directory. Pairing and credential prompts expire after 90 seconds. All processes run as the desktop user.
 
 New personal/open Wi-Fi networks use ConnMan's agent. Enterprise networks work when provisioned in ConnMan already; the UI does not configure EAP methods or CA certificates. Forgetting an immutable provisioned network may be refused by ConnMan: edit its provisioning file through your normal administration process. Bluetooth controls currently target the first adapter. Brightness requires a kernel backlight device and its normal user permissions; external monitor DDC is not included. Selecting an audio device changes the default for new streams; existing application streams may keep their original routing.
@@ -97,8 +101,9 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 GDK_BACKEND=x11 xvfb-run -a cargo test --locked --bin nexus keyboard_navigation -- --ignored --test-threads=1
 dbus-run-session -- cargo test --locked --test agents -- --ignored
+dbus-run-session -- cargo test --locked --test notifications -- --ignored
 ```
 
-D-Bus tests exercise Wi-Fi secret exchange, stale prompt rejection, Bluetooth confirmation/rejection and display-only passkeys on a private bus, without connecting real devices. Unit tests cover input validation, search ranking, desktop entry launching, workspace event selection and deterministic theme extraction. The isolated GTK test checks Ctrl+N/P, arrow navigation and Enter launching the selected application through a mock daemon.
+D-Bus tests exercise Wi-Fi secret exchange, stale prompt rejection, Bluetooth confirmation/rejection and display-only passkeys on a private bus, without connecting real devices. The notification test sends, replaces, closes and activates notifications over a private bus and checks the signals applications receive. Unit tests cover input validation, search ranking, desktop entry launching, workspace event selection and deterministic theme extraction. The isolated GTK test checks Ctrl+N/P, arrow navigation and Enter launching the selected application through a mock daemon.
 
 Primary API references: [ConnMan agent](https://git.kernel.org/pub/scm/network/connman/connman.git/tree/doc/agent-api.txt), [BlueZ agent](https://github.com/bluez/bluez/blob/master/doc/org.bluez.Agent.rst), [GTK](https://docs.gtk.org/gtk4/), [login1](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html).

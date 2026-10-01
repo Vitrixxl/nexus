@@ -269,6 +269,7 @@ struct Indicator {
 struct Bar {
     monitor: gtk::gdk::Monitor,
     window: gtk::ApplicationWindow,
+    notifications: Indicator,
     wifi: Indicator,
     bluetooth: Indicator,
     sound: Indicator,
@@ -282,6 +283,8 @@ pub struct Bars {
     app: gtk::Application,
     bars: RefCell<Vec<Bar>>,
     open: Open,
+    /// Live notifications and do not disturb, for bars created later.
+    notices: Cell<(usize, bool)>,
 }
 impl Bars {
     pub fn new(app: &gtk::Application, open: Open) -> Rc<Self> {
@@ -289,6 +292,7 @@ impl Bars {
             app: app.clone(),
             bars: RefCell::new(vec![]),
             open,
+            notices: Cell::new((0, false)),
         });
         this.sync();
         let weak = Rc::downgrade(&this);
@@ -362,6 +366,12 @@ impl Bars {
         launcher.set_child(Some(&middle));
         center.set_center_widget(Some(&launcher));
         let right = hbox(0);
+        let notifications = self.indicator(
+            monitor,
+            "preferences-system-notifications-symbolic",
+            "Notifications",
+            "notifications",
+        );
         let wifi = self.indicator(monitor, "network-wireless-symbolic", "Wi-Fi", "wifi");
         let bluetooth = self.indicator(monitor, "bluetooth-symbolic", "Bluetooth", "bluetooth");
         let sound = self.indicator(monitor, "audio-volume-high-symbolic", "Sound", "sound");
@@ -382,7 +392,15 @@ impl Bars {
         // The battery only reports its level; it opens nothing.
         battery.button.add_css_class("bar-static");
         battery.button.set_focusable(false);
-        for b in [&wifi, &bluetooth, &sound, &brightness, &battery, &power] {
+        for b in [
+            &notifications,
+            &wifi,
+            &bluetooth,
+            &sound,
+            &brightness,
+            &battery,
+            &power,
+        ] {
             right.append(&b.button);
         }
         center.set_end_widget(Some(&right));
@@ -394,9 +412,12 @@ impl Bars {
         shape.append(&fillet(true));
         window.set_child(Some(&shape));
         window.present();
+        let (count, quiet) = self.notices.get();
+        show_notices(&notifications, count, quiet);
         Bar {
             monitor: monitor.clone(),
             window,
+            notifications,
             wifi,
             bluetooth,
             sound,
@@ -543,6 +564,12 @@ impl Bars {
             }
         }
     }
+    pub fn notifications(&self, count: usize, quiet: bool) {
+        self.notices.set((count, quiet));
+        for bar in self.bars.borrow().iter() {
+            show_notices(&bar.notifications, count, quiet);
+        }
+    }
     pub fn workspaces(&self, workspaces: &serde_json::Value, monitors: &serde_json::Value) {
         let Some(workspaces) = workspaces.as_array() else {
             return;
@@ -591,6 +618,23 @@ impl Bars {
             }
         }
     }
+}
+fn show_notices(indicator: &Indicator, count: usize, quiet: bool) {
+    indicator.icon.set_icon_name(Some(if quiet {
+        "notifications-disabled-symbolic"
+    } else {
+        "preferences-system-notifications-symbolic"
+    }));
+    indicator.value.set_visible(count > 0);
+    indicator.value.set_text(&count.to_string());
+    indicator
+        .button
+        .set_tooltip_text(Some(&match (count, quiet) {
+            (0, false) => "No notifications".to_string(),
+            (0, true) => "Do not disturb".to_string(),
+            (1, _) => "1 notification".to_string(),
+            (n, _) => format!("{n} notifications"),
+        }));
 }
 fn battery() -> Option<(u8, bool)> {
     for entry in std::fs::read_dir("/sys/class/power_supply").ok()?.flatten() {

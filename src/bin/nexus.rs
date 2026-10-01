@@ -25,10 +25,16 @@ const PAGES: [(&str, &str, &str); 6] = [
     ("power", "Power", "system-shutdown-symbolic"),
 ];
 fn main() -> anyhow::Result<()> {
+    // Notifications must arrive on the session bus the desktop's applications
+    // share; without an address GLib finds it, a disabled one would hide it.
+    if std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok_and(|a| a.starts_with("disabled:")) {
+        // SAFETY: no other thread exists yet.
+        unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|control|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus status\nnexus init-theme"
+            "Nexus — desktop control center\n\nnexus [launcher|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus status\nnexus init-theme"
         );
         return Ok(());
     }
@@ -50,7 +56,7 @@ fn main() -> anyhow::Result<()> {
     .map(String::as_str)
     .unwrap_or("launcher");
     if !PAGES.iter().any(|p| p.0 == page)
-        && !["launcher", "control", "shell", "close"].contains(&page)
+        && !["launcher", "control", "notifications", "shell", "close"].contains(&page)
     {
         anyhow::bail!("Unknown page: {page}");
     }
@@ -80,6 +86,11 @@ fn main() -> anyhow::Result<()> {
             }
         }
     });
+    // Before GTK starts, so no other daemon is activated for an early notification.
+    let (notice_tx, notice_rx) = async_channel::unbounded();
+    let notices = notifications::Server::start(move |change| {
+        let _ = notice_tx.try_send(change);
+    });
     // NON_UNIQUE supports Artix sessions without a session D-Bus. Our private socket provides single-instance activation.
     // Without a session bus GTK names the window after the program; keep the
     // compositor class equal to the application id either way.
@@ -89,16 +100,22 @@ fn main() -> anyhow::Result<()> {
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     let page = activation;
-    let page_rx = Rc::new(RefCell::new(Some(page_rx)));
+    let page_rx = Rc::new(RefCell::new(Some((page_rx, notice_rx))));
     app.connect_activate(move |app| {
         if let Some(window) = app.active_window() {
             window.present();
             return;
         }
-        if let Some(rx) = page_rx.borrow_mut().take() {
+        if let Some((rx, notice_rx)) = page_rx.borrow_mut().take() {
             // Map the shell before waiting for D-Bus services or desktop entries.
             // The worker below fills the catalogue as soon as the daemon is ready.
-            build(app, &page, rx, launcher::Catalogue::default());
+            build(
+                app,
+                &page,
+                rx,
+                launcher::Catalogue::default(),
+                (notices.clone(), notice_rx),
+            );
         }
     });
     app.run_with_args::<&str>(&[]);
@@ -481,6 +498,10 @@ fn build(
     initial: &str,
     page_rx: async_channel::Receiver<String>,
     catalogue: launcher::Catalogue,
+    (server, notice_rx): (
+        Rc<notifications::Server>,
+        async_channel::Receiver<notifications::Change>,
+    ),
 ) {
     let (initial, initial_query) = initial.split_once('\t').unwrap_or((initial, ""));
     let shell = ui::shell::Surface::new(app);
@@ -869,11 +890,17 @@ fn build(
     let initial_revision = catalogue.revision;
     let launcher = ui::launcher::Launcher::new(catalogue, Rc::new(move || shell2.hide()));
     shell.content.add_named(&launcher.widget, Some("launcher"));
+    let center = ui::notifications::Center::new(server.clone());
+    shell
+        .content
+        .add_named(&center.widget, Some("notifications"));
+    let popups = ui::notifications::Popups::new(app, server.clone());
     let shell2 = shell.clone();
     let control2 = control.clone();
     let search = launcher.search.clone();
+    let (center2, popups2) = (center.clone(), popups.clone());
     let open: ui::shell::Open = Rc::new(move |page, monitor| {
-        if page != "launcher" && page != "power" {
+        if !["launcher", "power", "notifications"].contains(&page) {
             if shell2.window.is_visible() {
                 shell2.hide();
             }
@@ -888,6 +915,11 @@ fn build(
             reset_power();
             enter_power();
         }
+        if page == "notifications" {
+            // Everything the popups show is in the list now.
+            popups2.clear();
+            center2.refresh();
+        }
         shell2.show(page, monitor);
         if page == "launcher" {
             search.set_text("");
@@ -900,6 +932,39 @@ fn build(
     let open2 = open.clone();
     control.power.connect_clicked(move |_| open2("power", None));
     let bars = ui::shell::Bars::new(app, open.clone());
+    let sync_notices: Rc<dyn Fn()> = {
+        let (bars, center, server, shell) =
+            (bars.clone(), center.clone(), server.clone(), shell.clone());
+        Rc::new(move || {
+            if shell.is_open("notifications") {
+                center.refresh();
+            }
+            bars.notifications(server.count(), center.quiet.is_active());
+        })
+    };
+    {
+        let (popups, sync) = (popups.clone(), sync_notices.clone());
+        center.quiet.connect_active_notify(move |s| {
+            popups.set_quiet(s.is_active());
+            sync();
+        });
+    }
+    {
+        let (popups, shell) = (popups.clone(), shell.clone());
+        glib::spawn_future_local(async move {
+            while let Ok(change) = notice_rx.recv().await {
+                match change {
+                    // An open list already shows it.
+                    notifications::Change::Posted(n) if !shell.is_open("notifications") => {
+                        popups.show(&n)
+                    }
+                    notifications::Change::Closed(id) => popups.hide(id, false),
+                    _ => {}
+                }
+                sync_notices();
+            }
+        });
+    }
     if initial != "shell" {
         open(initial, None);
         if initial == "launcher" {
@@ -962,7 +1027,9 @@ fn build(
                 glib::idle_add_local_once(move || {
                     entry.grab_focus();
                 });
-            } else if PAGES.iter().any(|p| p.0 == page) || ["launcher", "control"].contains(&page) {
+            } else if PAGES.iter().any(|p| p.0 == page)
+                || ["launcher", "control", "notifications"].contains(&page)
+            {
                 command_open(page, command_monitor.borrow().as_ref());
             }
         }
