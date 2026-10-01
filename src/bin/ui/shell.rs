@@ -2,7 +2,10 @@ use super::super::{hbox, label, signal_icon};
 use gtk::{glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nexus_control::Snapshot;
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 pub struct Surface {
     pub window: gtk::ApplicationWindow,
@@ -11,6 +14,8 @@ pub struct Surface {
     clip: gtk::Box,
     corners: [gtk::Widget; 4],
     pub page: RefCell<String>,
+    /// The panel is folding up; the window hides once it is gone.
+    closing: Cell<bool>,
 }
 const FILLET: i32 = 14;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
@@ -70,7 +75,9 @@ impl Surface {
         }
         window.set_exclusive_zone(-1);
         window.set_margin(Edge::Top, BAR_BOTTOM);
-        window.set_keyboard_mode(KeyboardMode::Exclusive);
+        // On demand rather than exclusive: Hyprland still focuses the panel when it
+        // maps, but an exclusive layer would also take every click, the bar's too.
+        window.set_keyboard_mode(KeyboardMode::OnDemand);
         let overlay = gtk::Overlay::new();
         let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
         backdrop.set_hexpand(true);
@@ -132,7 +139,18 @@ impl Surface {
             clip,
             corners,
             page: RefCell::new(String::new()),
+            closing: Cell::new(false),
         });
+        let weak = Rc::downgrade(&this);
+        this.revealer
+            .connect_child_revealed_notify(move |revealer| {
+                if let Some(s) = weak.upgrade()
+                    && !revealer.is_child_revealed()
+                    && s.closing.replace(false)
+                {
+                    s.window.set_visible(false);
+                }
+            });
         let weak = Rc::downgrade(&this);
         let click = gtk::GestureClick::new();
         click.connect_released(move |_, _, _, _| {
@@ -167,15 +185,23 @@ impl Surface {
     pub fn is_open(&self, page: &str) -> bool {
         self.window.is_visible() && self.page.borrow().as_str() == page
     }
-    /// Closes at once. Animating the close (slide or fade) made GTK paint the
-    /// panel over the bar for a few frames.
+    /// Folds the panel back up under the bar, then hides the window. The power
+    /// chooser, and a panel still sliding in, close at once.
     pub fn hide(self: &Rc<Self>) {
         self.window.set_keyboard_mode(KeyboardMode::None);
-        self.window.set_visible(false);
         self.page.borrow_mut().clear();
-        // Collapse without animation so the next open slides in again.
-        self.revealer
-            .set_transition_type(gtk::RevealerTransitionType::None);
+        if self.window.has_css_class("power-overlay") || !self.revealer.is_child_revealed() {
+            self.closing.set(false);
+            self.window.set_visible(false);
+            // Collapse without animation so the next open slides in again.
+            self.revealer
+                .set_transition_type(gtk::RevealerTransitionType::None);
+        } else {
+            self.closing.set(true);
+            self.revealer
+                .set_transition_type(gtk::RevealerTransitionType::SlideDown);
+            self.revealer.set_transition_duration(160);
+        }
         self.revealer.set_reveal_child(false);
     }
     pub fn show(self: &Rc<Self>, page: &str, monitor: Option<&gtk::gdk::Monitor>) {
@@ -186,12 +212,26 @@ impl Surface {
             self.window.set_monitor(Some(monitor));
         }
         *self.page.borrow_mut() = page.into();
+        self.closing.set(false);
         let power = page == "power";
         for corner in &self.corners {
             corner.set_visible(!power);
         }
         // The launcher surface starts under the bar, so nothing it renders (even a
         // stale frame) can cover the bar; the power chooser dims the whole screen.
+        // The power tiles fly in from beyond the panel, which must not clip them.
+        let overflow = if power {
+            gtk::Overflow::Visible
+        } else {
+            gtk::Overflow::Hidden
+        };
+        for widget in [
+            self.content.upcast_ref::<gtk::Widget>(),
+            self.revealer.upcast_ref(),
+            self.clip.upcast_ref(),
+        ] {
+            widget.set_overflow(overflow);
+        }
         if power {
             self.window.add_css_class("power-overlay");
             self.window.set_margin(Edge::Top, 0);
@@ -204,12 +244,16 @@ impl Surface {
             self.clip.set_margin_top(0);
         }
         self.content.set_visible_child_name(page);
-        self.window.set_keyboard_mode(KeyboardMode::Exclusive);
+        self.window.set_keyboard_mode(KeyboardMode::OnDemand);
         self.window.present();
         let s = self.clone();
         glib::idle_add_local_once(move || {
-            s.revealer
-                .set_transition_type(gtk::RevealerTransitionType::SlideDown);
+            // The power tiles animate on their own.
+            s.revealer.set_transition_type(if power {
+                gtk::RevealerTransitionType::None
+            } else {
+                gtk::RevealerTransitionType::SlideDown
+            });
             s.revealer.set_transition_duration(120);
             s.revealer.set_reveal_child(true);
         });

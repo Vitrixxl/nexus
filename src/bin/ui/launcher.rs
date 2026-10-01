@@ -50,8 +50,10 @@ impl Launcher {
         root.append(&results);
         let empty = vbox(8);
         empty.add_css_class("empty-results");
-        empty.append(&label("No matches", "row-title"));
-        empty.append(&label("Try another application name.", "muted"));
+        let empty_title = label("No matches", "row-title");
+        let empty_hint = label("Try another application name.", "muted");
+        empty.append(&empty_title);
+        empty.append(&empty_hint);
         empty.set_visible(false);
         root.append(&empty);
         let footer = hbox(12);
@@ -94,6 +96,13 @@ impl Launcher {
                     results.remove(&child);
                 }
                 empty.set_visible(ranked.is_empty());
+                let loading = cache.revision == 0;
+                empty_title.set_text(if loading {
+                    "Loading applications…"
+                } else {
+                    "No matches"
+                });
+                empty_hint.set_visible(!loading);
                 title.set_text(if query.trim().is_empty() {
                     "APPLICATIONS"
                 } else {

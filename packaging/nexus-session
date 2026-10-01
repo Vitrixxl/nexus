@@ -4,7 +4,8 @@ set -eu
 export PATH="$HOME/.local/bin:$PATH"
 state="${XDG_STATE_HOME:-$HOME/.local/state}/nexus"
 mkdir -p "$state"
-nexus init-theme
+# The shell loads its theme directly from settings; theme generation belongs to
+# the daemon and must not precede the first frame.
 nexusd >>"$state/daemon.log" 2>&1 &
 # Nexus owns the bar, launcher and settings panels in a single UI process.
 nexus shell >>"$state/shell.log" 2>&1 &

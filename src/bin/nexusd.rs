@@ -30,7 +30,12 @@ fn main() -> anyhow::Result<()> {
         }
     });
     let backend = Arc::new(Backend::new()?);
-    backend.register_agents();
+    // ConnMan/BlueZ may still be starting with the desktop session. Their D-Bus
+    // registration must not delay serving the catalogue and cached state.
+    {
+        let backend = backend.clone();
+        thread::spawn(move || backend.register_agents());
+    }
     let catalogue = Arc::new(Mutex::new(launcher::Catalogue::load()));
     launcher::watch(catalogue.clone());
     let settings = theme::load();

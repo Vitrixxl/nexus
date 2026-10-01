@@ -177,12 +177,14 @@ pub fn css(s: &Settings) -> String {
     } else {
         ("#d7786d", "#e29990", "rgba(0, 0, 0, 0.7)", 0.05)
     };
+    let power_entrances = power_entrances();
     format!(
         r#"
 @define-color nexus_bg {bg}; @define-color nexus_surface {surface}; @define-color nexus_fg {fg}; @define-color nexus_muted {muted}; @define-color nexus_accent {accent};
 @define-color nexus_on_accent {on_accent}; @define-color nexus_accent_fg {accent_fg}; @define-color nexus_error {error}; @define-color nexus_danger {danger}; @define-color nexus_shadow {shadow};
-/* Theme switches fade instead of snapping; interactive highlights stay instant below. */
-window.nexus, .nexus .sidebar, .nexus .card, .nexus-bar .bar-body, .panel-fillet, .shell-panel, .nexus label, .nexus image, .nexus .nav-icon {{ transition: background-color 300ms ease, color 300ms ease, border-color 300ms ease; }}
+/* Theme switches fade instead of snapping; interactive highlights stay instant below.
+   The shell overlay is left out: its dimming would linger after the power chooser. */
+window.nexus:not(.shell-overlay), .nexus .sidebar, .nexus .card, .nexus-bar .bar-body, .panel-fillet, .shell-panel, .nexus label, .nexus image, .nexus .nav-icon {{ transition: background-color 300ms ease, color 300ms ease, border-color 300ms ease; }}
 window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', 'Inter', sans-serif; font-size: 14px; }}
 .nexus .muted {{ color: @nexus_muted; }}
 .nexus .caption {{ font-size: 12px; }}
@@ -260,14 +262,14 @@ window.shell-overlay {{ background: transparent; }}
 .panel-fillet {{ color: @nexus_bg; }}
 window.power-overlay {{ background: alpha(#080d0a, 0.72); }}
 .shell-panel {{ background: @nexus_bg; border-radius: 0 0 22px 22px; border: none; box-shadow: 0 24px 44px -12px @nexus_shadow, 0 8px 16px -8px alpha(@nexus_shadow, 0.65); }}
-.power-overlay .shell-panel {{ border-radius: 22px; border: 1px solid alpha(@nexus_fg, 0.06); box-shadow: 0 24px 48px -12px @nexus_shadow; }}
-.nexus .power-page {{ padding: 36px 40px 24px; min-width: 520px; }}
-.nexus button.power-tile {{ padding: 28px 18px 22px; font-size: 15px; font-weight: 500; border-radius: 16px; background: alpha(@nexus_fg, 0.06); }}
-.nexus button.power-tile:hover {{ background: alpha(@nexus_fg, 0.1); }}
+.power-overlay .shell-panel {{ background: transparent; border: none; box-shadow: none; }}
+.nexus .power-page {{ padding: 24px; }}
+.nexus button.power-tile {{ min-width: 168px; padding: 32px 18px 26px; font-size: 15px; font-weight: 500; border-radius: 22px; background: @nexus_bg; border: 1px solid alpha(@nexus_fg, 0.06); box-shadow: 0 24px 48px -12px @nexus_shadow; }}
+.nexus button.power-tile:hover {{ background: mix(@nexus_bg, @nexus_fg, 0.06); }}
 .nexus button.power-tile.selected {{ background: alpha(@nexus_accent, 0.2); }}
 .nexus button.power-tile.danger {{ color: @nexus_danger; }}
-.nexus button.power-tile.danger.selected {{ background: alpha(@nexus_error, 0.18); }}
-
+.nexus button.power-tile.danger.selected {{ background: mix(@nexus_bg, @nexus_error, 0.18); }}
+{power_entrances}
 window.prompt-window {{ background: transparent; }}
 .nexus .prompt {{ background: @nexus_bg; border-radius: 18px; padding: 24px; border: 1px solid alpha(@nexus_fg, 0.1); }}
 .nexus .prompt .title {{ font-size: 20px; }}
@@ -306,6 +308,24 @@ window.nexus.nexus-bar {{ background: transparent; }}
 "#,
         accent = s.accent
     )
+}
+/// Entrances of the power tiles: the outer ones from their side, the middle one
+/// from below. Each comes in two identical copies so that it can be replayed.
+fn power_entrances() -> String {
+    let mut css = String::new();
+    for (side, axis, offset) in [
+        ("left", 'X', -240),
+        ("bottom", 'Y', 160),
+        ("right", 'X', 240),
+    ] {
+        for copy in ["a", "b"] {
+            css += &format!(
+                "@keyframes power-{side}-{copy} {{ from {{ opacity: 0; transform: translate{axis}({offset}px); }} to {{ opacity: 1; transform: translate{axis}(0); }} }}\n\
+                 .nexus button.power-tile.from-{side}.enter-{copy} {{ animation: power-{side}-{copy} 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }}\n"
+            );
+        }
+    }
+    css
 }
 pub fn write_theme(s: &Settings) -> Result<()> {
     let dir = config_dir();

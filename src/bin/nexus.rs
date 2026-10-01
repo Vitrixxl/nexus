@@ -36,8 +36,8 @@ fn main() -> anyhow::Result<()> {
         theme::write_theme(&theme::load())?;
         return Ok(());
     }
-    ensure_daemon()?;
     if args.first().is_some_and(|a| a == "status") {
+        ensure_daemon()?;
         let reply = request(&Request::Status)?;
         println!("{}", serde_json::to_string_pretty(&reply)?);
         return Ok(());
@@ -80,9 +80,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
     });
-    let catalogue = request(&Request::Applications)?
-        .catalogue
-        .ok_or_else(|| anyhow::anyhow!("Restart nexusd to load the application catalogue"))?;
     // NON_UNIQUE supports Artix sessions without a session D-Bus. Our private socket provides single-instance activation.
     // Without a session bus GTK names the window after the program; keep the
     // compositor class equal to the application id either way.
@@ -99,7 +96,9 @@ fn main() -> anyhow::Result<()> {
             return;
         }
         if let Some(rx) = page_rx.borrow_mut().take() {
-            build(app, &page, rx, catalogue.clone());
+            // Map the shell before waiting for D-Bus services or desktop entries.
+            // The worker below fills the catalogue as soon as the daemon is ready.
+            build(app, &page, rx, launcher::Catalogue::default());
         }
     });
     app.run_with_args::<&str>(&[]);
@@ -734,12 +733,11 @@ fn build(
     stack.add_named(&appearance, Some("appearance"));
     stack.set_visible_child_name("wifi");
 
-    // Power stays a full-screen overlay; choices are confirmed inline because a
-    // regular dialog would open underneath the overlay layer.
+    // Power stays a full-screen overlay of floating tiles; choices are confirmed
+    // inline because a regular dialog would open underneath the overlay layer.
     let power = vbox(20);
     power.add_css_class("power-page");
-    power.append(&heading("Take a break.", ""));
-    let tiles = hbox(14);
+    let tiles = hbox(18);
     tiles.set_homogeneous(true);
     power.append(&tiles);
     let confirm_row = hbox(12);
@@ -757,35 +755,33 @@ fn build(
     power.append(&confirm_row);
     let power_error = error_label();
     power.append(&power_error);
-    let back = button("Back to desktop  ·  Esc");
-    back.add_css_class("flat");
-    back.set_halign(gtk::Align::Center);
-    let shell2 = shell.clone();
-    back.connect_clicked(move |_| shell2.hide());
-    power.append(&back);
     let pending_power = Rc::new(Cell::new(None::<&'static str>));
-    for (op, title, icon, question) in [
+    for (op, title, icon, question, from) in [
         (
             "sleep",
             "Sleep",
             "weather-clear-night-symbolic",
             "Suspend this computer?",
+            "from-left",
         ),
         (
             "restart",
             "Restart",
             "view-refresh-symbolic",
             "Restart now? Unsaved work will be lost.",
+            "from-bottom",
         ),
         (
             "shutdown",
             "Shut down",
             "system-shutdown-symbolic",
             "Shut down now? Unsaved work will be lost.",
+            "from-right",
         ),
     ] {
         let b = gtk::Button::new();
         b.add_css_class("power-tile");
+        b.add_css_class(from);
         if op == "shutdown" {
             b.add_css_class("danger");
         }
@@ -840,6 +836,25 @@ fn build(
             set_error(&error, None);
         })
     };
+    // GTK only replays a CSS animation whose name changed, so each opening
+    // switches the tiles between two copies of their entrance animations.
+    let enter_power = {
+        let tiles = tiles.clone();
+        let second = Cell::new(false);
+        move || {
+            let (add, remove) = if second.replace(!second.get()) {
+                ("enter-b", "enter-a")
+            } else {
+                ("enter-a", "enter-b")
+            };
+            let mut child = tiles.first_child();
+            while let Some(c) = child {
+                c.remove_css_class(remove);
+                c.add_css_class(add);
+                child = c.next_sibling();
+            }
+        }
+    };
     let reset = reset_power.clone();
     confirm_cancel.connect_clicked(move |_| reset());
     let ui2 = ui.clone();
@@ -871,6 +886,7 @@ fn build(
         }
         if page == "power" {
             reset_power();
+            enter_power();
         }
         shell2.show(page, monitor);
         if page == "launcher" {
@@ -897,6 +913,9 @@ fn build(
     ui::workspaces::watch(workspace_tx, running.clone());
     thread::spawn(move || {
         let mut catalogue_revision = initial_revision;
+        if let Err(e) = ensure_daemon() {
+            let _ = tx.send(Event::Done(Err(e.to_string())));
+        }
         while running.load(std::sync::atomic::Ordering::Relaxed) {
             match request(&Request::Status) {
                 Ok(reply) => {
