@@ -55,6 +55,12 @@ pub struct Prompt {
     pub fields: Vec<String>,
     pub display_only: bool,
 }
+/// hyprsunset blue-light filter: whether it tints the screen, and how warm.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct NightLight {
+    pub enabled: bool,
+    pub temperature: u16,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Snapshot {
     pub wifi: bool,
@@ -76,6 +82,10 @@ pub struct Snapshot {
     pub brightness: Option<u8>,
     pub audio_error: Option<String>,
     pub brightness_error: Option<String>,
+    #[serde(default)]
+    pub night_light: Option<NightLight>,
+    #[serde(default)]
+    pub night_light_error: Option<String>,
     pub settings: theme::Settings,
     pub prompt: Option<Prompt>,
     #[serde(default)]

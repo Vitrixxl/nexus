@@ -84,6 +84,9 @@ fn main() -> anyhow::Result<()> {
         .catalogue
         .ok_or_else(|| anyhow::anyhow!("Restart nexusd to load the application catalogue"))?;
     // NON_UNIQUE supports Artix sessions without a session D-Bus. Our private socket provides single-instance activation.
+    // Without a session bus GTK names the window after the program; keep the
+    // compositor class equal to the application id either way.
+    glib::set_prgname(Some("io.github.vitrixxl.Nexus"));
     let app = gtk::Application::builder()
         .application_id("io.github.vitrixxl.Nexus")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
@@ -241,8 +244,22 @@ fn toggle(ui: &Ui, op: &str) -> gtk::Switch {
 fn heading(title: &str, subtitle: &str) -> gtk::Box {
     let b = vbox(4);
     b.append(&label(title, "title"));
-    b.append(&label(subtitle, "muted"));
+    if !subtitle.is_empty() {
+        b.append(&label(subtitle, "muted"));
+    }
     b
+}
+/// Page title with its controls floating at the right.
+fn radio_heading(title: &str, scan: &gtk::Button, toggle: &gtk::Switch) -> gtk::Box {
+    let row = hbox(12);
+    let text = label(title, "title");
+    text.set_hexpand(true);
+    text.set_valign(gtk::Align::Center);
+    row.append(&text);
+    scan.set_valign(gtk::Align::Center);
+    row.append(scan);
+    row.append(toggle);
+    row
 }
 /// Card with an icon, a title and a one-line status, followed by trailing widgets.
 fn row_card(icon: &str, title: &str) -> (gtk::Box, gtk::Label) {
@@ -282,17 +299,22 @@ fn scrolled(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
         .build()
 }
 fn slider(ui: &Ui, op: &str, target: &str) -> gtk::Scale {
-    let s = gtk::Scale::with_range(
-        gtk::Orientation::Horizontal,
-        if op == "brightness" { 1. } else { 0. },
-        100.,
-        1.,
-    );
+    let min = if op == "brightness" { 1. } else { 0. };
+    ranged_slider(ui, op, target, (min, 100., 1.), "%")
+}
+fn ranged_slider(
+    ui: &Ui,
+    op: &str,
+    target: &str,
+    (min, max, step): (f64, f64, f64),
+    unit: &'static str,
+) -> gtk::Scale {
+    let s = gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, step);
     s.set_draw_value(true);
     s.set_value_pos(gtk::PositionType::Right);
     s.set_hexpand(true);
     s.set_digits(0);
-    s.set_format_value_func(|_, v| format!("{v:.0}%"));
+    s.set_format_value_func(move |_, v| format!("{v:.0}{unit}"));
     // Levels apply while dragging. One worker per slider sends them in order and
     // skips values it has not reached yet, so the daemon never sees overlapping
     // requests and the latest position always wins.
@@ -482,13 +504,10 @@ fn build(
     };
 
     let wifi = page_box();
-    wifi.append(&heading("Wi-Fi", "Your networks, one connection away."));
-    let (wifi_header, wifi_status) = row_card("network-wireless-symbolic", "Wi-Fi");
     let wifi_scan = button("Scan");
     ui.bind(&wifi_scan, action("wifi-scan", "", ""));
     let wifi_toggle = toggle(&ui, "wifi-power");
-    wifi_header.append(&wifi_scan);
-    wifi_header.append(&wifi_toggle);
+    let wifi_header = radio_heading("Wi-Fi", &wifi_scan, &wifi_toggle);
     wifi.append(&wifi_header);
     let wifi_error = error_label();
     wifi.append(&wifi_error);
@@ -497,16 +516,10 @@ fn build(
     stack.add_named(&wifi, Some("wifi"));
 
     let bt = page_box();
-    bt.append(&heading(
-        "Bluetooth",
-        "Make room for your favorite devices.",
-    ));
-    let (bt_header, bt_status) = row_card("bluetooth-symbolic", "Bluetooth");
     let bt_scan = button("Scan");
     ui.bind(&bt_scan, action("bluetooth-scan", "", ""));
     let bt_toggle = toggle(&ui, "bluetooth-power");
-    bt_header.append(&bt_scan);
-    bt_header.append(&bt_toggle);
+    let bt_header = radio_heading("Bluetooth", &bt_scan, &bt_toggle);
     bt.append(&bt_header);
     let bt_error = error_label();
     bt.append(&bt_error);
@@ -515,7 +528,7 @@ fn build(
     stack.add_named(&bt, Some("bluetooth"));
 
     let sound = page_box();
-    sound.append(&heading("Sound", "Set the right level."));
+    sound.append(&heading("Sound", ""));
     let volume = slider(&ui, "volume", "");
     let mute = toggle(&ui, "mute");
     let outputs = audio_dropdown();
@@ -554,11 +567,43 @@ fn build(
     }
 
     let display = page_box();
-    display.append(&heading("Display", "A comfortable view, day or night."));
+    display.append(&heading("Display", ""));
     let brightness = slider(&ui, "brightness", "");
     display.append(&level_card("Brightness", &brightness, None, None));
     let light_error = error_label();
     display.append(&light_error);
+    let night_card = vbox(10);
+    night_card.add_css_class("card");
+    let night_head = hbox(10);
+    let night_title = label("Night light", "row-title");
+    night_title.set_hexpand(true);
+    night_head.append(&night_title);
+    let night_schedule = button("Use schedule");
+    night_schedule.add_css_class("flat");
+    night_schedule.set_valign(gtk::Align::Center);
+    night_schedule.set_tooltip_text(Some("Follow the times in hyprsunset.conf"));
+    ui.bind(&night_schedule, action("night-light-schedule", "", ""));
+    night_head.append(&night_schedule);
+    let night_toggle = toggle(&ui, "night-light");
+    night_head.append(&night_toggle);
+    night_card.append(&night_head);
+    let night_temperature = ranged_slider(
+        &ui,
+        "night-light-temperature",
+        "",
+        (
+            f64::from(backend::NIGHT_LIGHT_MIN),
+            f64::from(backend::NIGHT_LIGHT_MAX),
+            100.,
+        ),
+        " K",
+    );
+    // Further right means a stronger, warmer filter.
+    night_temperature.set_inverted(true);
+    night_card.append(&night_temperature);
+    display.append(&night_card);
+    let night_error = error_label();
+    display.append(&night_error);
     let (shortcut, shortcut_detail) = row_card(
         "preferences-desktop-wallpaper-symbolic",
         "Wallpaper & theme",
@@ -572,7 +617,7 @@ fn build(
     stack.add_named(&display, Some("display"));
 
     let appearance = page_box();
-    appearance.append(&heading("Appearance", "Make yourself at home."));
+    appearance.append(&heading("Appearance", ""));
     let (mode_row, mode_detail) = row_card("weather-clear-night-symbolic", "Mode");
     mode_detail.set_text("Surfaces for the bar, launcher and panels");
     let segmented = hbox(0);
@@ -693,7 +738,7 @@ fn build(
     // regular dialog would open underneath the overlay layer.
     let power = vbox(20);
     power.add_css_class("power-page");
-    power.append(&heading("Take a break.", "What would you like to do?"));
+    power.append(&heading("Take a break.", ""));
     let tiles = hbox(14);
     tiles.set_homogeneous(true);
     power.append(&tiles);
@@ -945,22 +990,12 @@ fn build(
                     set_error(&bt_error, s.bluetooth_error.as_deref());
                     set_error(&audio_error, s.audio_error.as_deref());
                     set_error(&light_error, s.brightness_error.as_deref());
+                    set_error(&night_error, s.night_light_error.as_deref());
                     let network = s
                         .networks
                         .iter()
                         .find(|n| matches!(n.state.as_str(), "ready" | "online"));
-                    wifi_status.set_text(&match network {
-                        _ if !s.wifi => "Off".to_string(),
-                        Some(n) => format!("Connected to {}", n.name),
-                        None => "Not connected".to_string(),
-                    });
                     let connected = s.devices.iter().filter(|d| d.connected).count();
-                    bt_status.set_text(&match connected {
-                        _ if !s.bluetooth => "Off".to_string(),
-                        0 => "On".to_string(),
-                        1 => "1 device connected".to_string(),
-                        n => format!("{n} devices connected"),
-                    });
                     control.set_detail(
                         "wifi",
                         match network {
@@ -1008,6 +1043,14 @@ fn build(
                         {
                             slider.set_value(f64::from(v));
                         }
+                    }
+                    let night = s.night_light.clone().unwrap_or_default();
+                    night_toggle.set_sensitive(s.night_light.is_some());
+                    night_toggle.set_active(night.enabled);
+                    night_schedule.set_sensitive(s.night_light.is_some());
+                    night_temperature.set_sensitive(s.night_light.is_some());
+                    if !night_temperature.has_focus() && s.night_light.is_some() {
+                        night_temperature.set_value(f64::from(night.temperature));
                     }
                     mute.set_active(s.muted);
                     mic_mute.set_active(s.mic_muted);

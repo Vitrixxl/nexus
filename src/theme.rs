@@ -77,19 +77,74 @@ pub fn accent_for(path: &str) -> Result<String> {
         b * 24 + 64
     ))
 }
+fn rgb(hex: &str) -> [f64; 3] {
+    let hex = hex.trim_start_matches('#');
+    let channel = |i: usize| {
+        u8::from_str_radix(hex.get(i..i + 2).unwrap_or("80"), 16).unwrap_or(128) as f64 / 255.
+    };
+    [channel(0), channel(2), channel(4)]
+}
+fn hex([r, g, b]: [f64; 3]) -> String {
+    let c = |v: f64| (v.clamp(0., 1.) * 255.).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", c(r), c(g), c(b))
+}
+/// WCAG relative luminance.
+fn luminance(c: [f64; 3]) -> f64 {
+    let lin = |v: f64| {
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+}
+fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+/// The accent shifted toward black or white until it reads as text on `bg`.
+fn readable_on(accent: [f64; 3], bg: [f64; 3]) -> [f64; 3] {
+    let target = if luminance(bg) > 0.5 { 0. } else { 1. };
+    let mut c = accent;
+    for _ in 0..10 {
+        if contrast(c, bg) >= 3.5 {
+            break;
+        }
+        c = c.map(|v| v + (target - v) * 0.15);
+    }
+    c
+}
 pub fn css(s: &Settings) -> String {
     let (bg, surface, fg, muted) = palette(s);
+    let light = s.mode == "light";
+    let accent = rgb(&s.accent);
+    // Text and icons drawn on an accent fill, and the accent used as text colour.
+    let on_accent = if contrast(accent, rgb("#16201b")) >= contrast(accent, [1.; 3]) {
+        "#16201b"
+    } else {
+        "#ffffff"
+    };
+    let accent_fg = hex(readable_on(accent, rgb(bg)));
+    let (error, danger, shadow, border) = if light {
+        ("#b3473b", "#b3473b", "rgba(0, 0, 0, 0.22)", 0.09)
+    } else {
+        ("#d7786d", "#e29990", "rgba(0, 0, 0, 0.7)", 0.05)
+    };
     format!(
         r#"
 @define-color nexus_bg {bg}; @define-color nexus_surface {surface}; @define-color nexus_fg {fg}; @define-color nexus_muted {muted}; @define-color nexus_accent {accent};
+@define-color nexus_on_accent {on_accent}; @define-color nexus_accent_fg {accent_fg}; @define-color nexus_error {error}; @define-color nexus_danger {danger}; @define-color nexus_shadow {shadow};
+/* Theme switches fade instead of snapping; interactive highlights stay instant below. */
+window.nexus, .nexus .sidebar, .nexus .card, .nexus-bar, .shell-panel, .nexus label, .nexus image, .nexus .nav-icon {{ transition: background-color 300ms ease, color 300ms ease, border-color 300ms ease; }}
 window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', 'Inter', sans-serif; font-size: 14px; }}
 .nexus .muted {{ color: @nexus_muted; }}
 .nexus .caption {{ font-size: 12px; }}
 .nexus .title {{ font-size: 26px; font-weight: 650; letter-spacing: -0.5px; }}
-.nexus .row-title {{ font-weight: 600; }}
+.nexus .row-title {{ font-weight: 600; color: @nexus_fg; }}
 .nexus .eyebrow {{ font-size: 10px; font-weight: 600; letter-spacing: 2px; color: @nexus_muted; }}
-.nexus .error {{ color: #d7786d; }}
-.nexus .banner {{ background: alpha(#d7786d, 0.12); border-radius: 10px; padding: 10px 14px; }}
+.nexus .error {{ color: @nexus_error; }}
+.nexus .banner {{ background: alpha(@nexus_error, 0.12); border-radius: 10px; padding: 10px 14px; }}
 .nexus .empty-state {{ color: @nexus_muted; padding: 36px 0; }}
 
 .nexus button {{ min-height: 0; min-width: 0; border-radius: 10px; padding: 8px 14px; background: alpha(@nexus_fg, 0.07); color: @nexus_fg; border: none; box-shadow: none; text-shadow: none; outline: none; }}
@@ -99,7 +154,7 @@ window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', '
 .nexus button:focus-visible {{ outline: 2px solid alpha(@nexus_accent, 0.7); outline-offset: -2px; }}
 .nexus button.flat {{ background: transparent; color: @nexus_muted; }}
 .nexus button.flat:hover {{ background: alpha(@nexus_fg, 0.07); color: @nexus_fg; }}
-.nexus button.suggested-action {{ background: @nexus_accent; color: #16201b; font-weight: 600; }}
+.nexus button.suggested-action {{ background: @nexus_accent; color: @nexus_on_accent; font-weight: 600; }}
 .nexus button.suggested-action:hover {{ background: shade(@nexus_accent, 1.08); }}
 .nexus button.destructive-action {{ background: #c4655a; color: #ffffff; font-weight: 600; }}
 .nexus button.destructive-action:hover {{ background: #d27468; }}
@@ -113,19 +168,19 @@ window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', '
 .nexus button.nav .nav-icon {{ background: alpha(@nexus_fg, 0.07); color: alpha(@nexus_fg, 0.85); border-radius: 10px; min-width: 36px; min-height: 36px; }}
 .nexus button.nav .nav-detail {{ color: @nexus_muted; font-size: 13px; font-weight: 400; }}
 .nexus button.nav.nav-active {{ background: alpha(@nexus_fg, 0.08); color: @nexus_fg; font-weight: 600; }}
-.nexus button.nav.nav-active .nav-icon {{ background: @nexus_accent; color: #16201b; }}
-.nexus button.nav.power-nav:hover .nav-icon {{ background: alpha(#d7786d, 0.2); color: #e29990; }}
+.nexus button.nav.nav-active .nav-icon {{ background: @nexus_accent; color: @nexus_on_accent; }}
+.nexus button.nav.power-nav:hover .nav-icon {{ background: alpha(@nexus_error, 0.2); color: @nexus_danger; }}
 .control-center .status {{ font-size: 12px; padding: 0 32px 16px; }}
 
-.nexus .card {{ background: @nexus_surface; border-radius: 14px; padding: 14px 16px; }}
+.nexus .card {{ background: @nexus_surface; color: @nexus_fg; border: 1px solid alpha(@nexus_fg, {border}); box-shadow: none; border-radius: 14px; padding: 14px 16px; }}
 .nexus .row-icon {{ color: @nexus_muted; }}
 .nexus button.stream-mute {{ padding: 6px; }}
-.nexus button.stream-mute:checked {{ background: alpha(#d7786d, 0.16); color: #e29990; }}
-.nexus .list-row.active .row-icon {{ color: @nexus_accent; }}
+.nexus button.stream-mute:checked {{ background: alpha(@nexus_error, 0.16); color: @nexus_danger; }}
+.nexus .list-row.active .row-icon {{ color: @nexus_accent_fg; }}
 .nexus .segmented {{ background: alpha(@nexus_fg, 0.07); border-radius: 10px; padding: 3px; }}
 .nexus .segmented button {{ background: transparent; padding: 6px 16px; border-radius: 8px; color: @nexus_muted; }}
 .nexus .segmented button:hover {{ color: @nexus_fg; }}
-.nexus .segmented button:checked {{ background: @nexus_accent; color: #16201b; font-weight: 600; }}
+.nexus .segmented button:checked {{ background: @nexus_accent; color: @nexus_on_accent; font-weight: 600; }}
 .nexus .wallpaper-frame {{ border-radius: 10px; background: alpha(@nexus_fg, 0.05); }}
 
 .nexus switch {{ background: alpha(@nexus_fg, 0.16); border: none; border-radius: 999px; padding: 3px; box-shadow: none; outline: none; }}
@@ -158,14 +213,14 @@ window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', '
 window.shell-overlay {{ background: transparent; }}
 .panel-fillet {{ color: @nexus_bg; }}
 window.power-overlay {{ background: alpha(#080d0a, 0.72); }}
-.shell-panel {{ background: @nexus_bg; border-radius: 0 0 22px 22px; border: none; box-shadow: 0 24px 44px -12px alpha(black, 0.7), 0 8px 16px -8px alpha(black, 0.45); }}
-.power-overlay .shell-panel {{ border-radius: 22px; border: 1px solid alpha(@nexus_fg, 0.06); box-shadow: 0 24px 48px -12px alpha(black, 0.6); }}
+.shell-panel {{ background: @nexus_bg; border-radius: 0 0 22px 22px; border: none; box-shadow: 0 24px 44px -12px @nexus_shadow, 0 8px 16px -8px alpha(@nexus_shadow, 0.65); }}
+.power-overlay .shell-panel {{ border-radius: 22px; border: 1px solid alpha(@nexus_fg, 0.06); box-shadow: 0 24px 48px -12px @nexus_shadow; }}
 .nexus .power-page {{ padding: 36px 40px 24px; min-width: 520px; }}
 .nexus button.power-tile {{ padding: 28px 18px 22px; font-size: 15px; font-weight: 500; border-radius: 16px; background: alpha(@nexus_fg, 0.06); }}
 .nexus button.power-tile:hover {{ background: alpha(@nexus_fg, 0.1); }}
 .nexus button.power-tile.selected {{ background: alpha(@nexus_accent, 0.2); }}
-.nexus button.power-tile.danger {{ color: #e29990; }}
-.nexus button.power-tile.danger.selected {{ background: alpha(#d7786d, 0.18); }}
+.nexus button.power-tile.danger {{ color: @nexus_danger; }}
+.nexus button.power-tile.danger.selected {{ background: alpha(@nexus_error, 0.18); }}
 
 window.prompt-window {{ background: transparent; }}
 .nexus .prompt {{ background: @nexus_bg; border-radius: 18px; padding: 24px; border: 1px solid alpha(@nexus_fg, 0.1); }}
@@ -176,25 +231,25 @@ window.prompt-window {{ background: transparent; }}
 .nexus-bar button {{ padding: 0 10px; min-height: 26px; margin: 0 1px; font-size: 12px; background: transparent; border-radius: 8px; }}
 .nexus-bar button:hover {{ background: alpha(@nexus_fg, 0.08); }}
 .nexus-bar button.bar-static:hover {{ background: transparent; }}
-.nexus-bar .bar-brand {{ color: @nexus_accent; font-size: 14px; font-weight: 700; padding: 0 12px; }}
+.nexus-bar .bar-brand {{ color: @nexus_accent_fg; font-size: 14px; font-weight: 700; padding: 0 12px; }}
 .nexus-bar .bar-search {{ background: @nexus_surface; padding: 0 16px; border-radius: 8px; }}
 .nexus-bar .bar-search:hover {{ background: shade(@nexus_surface, 1.15); }}
 .nexus-bar .bar-hint {{ color: @nexus_muted; font-size: 10px; }}
 .nexus-bar .bar-clock {{ font-size: 12px; }}
-.nexus-bar .bar-power {{ color: @nexus_accent; padding: 0 12px; }}
+.nexus-bar .bar-power {{ color: @nexus_accent_fg; padding: 0 12px; }}
 .nexus-bar .workspace {{ color: @nexus_muted; padding: 0; min-width: 26px; }}
-.nexus-bar .workspace.active {{ background: @nexus_surface; color: @nexus_accent; }}
-.launcher .search-row {{ padding: 20px 22px 16px; color: @nexus_accent; }}
+.nexus-bar .workspace.active {{ background: @nexus_surface; color: @nexus_accent_fg; }}
+.launcher .search-row {{ padding: 20px 22px 16px; color: @nexus_accent_fg; }}
 .nexus .launcher entry, .nexus .launcher entry:focus-within {{ background: transparent; border: none; box-shadow: none; padding: 4px; font-size: 18px; color: @nexus_fg; }}
 .launcher .keycap {{ font-size: 10px; color: @nexus_muted; border: none; border-radius: 5px; padding: 4px 6px; }}
 .launcher .app-results {{ background: transparent; padding: 4px 10px 6px; }}
 .launcher .app-results row {{ border-radius: 12px; background: transparent; color: @nexus_fg; outline: none; }}
-.launcher, .launcher *, .nexus button.nav, .nexus button.nav * {{ transition: none; }}
+.nexus .launcher, .nexus .launcher *, .nexus button.nav, .nexus button.nav * {{ transition: none; }}
 .launcher .app-results row:hover {{ background: alpha(@nexus_accent,0.10); }}
 .launcher .app-results row:selected {{ background: alpha(@nexus_accent,0.18); }}
 .launcher .app-row {{ padding: 8px 12px; }}
 .launcher .launch-arrow {{ color: transparent; font-size: 13px; }}
-.launcher row:selected .launch-arrow {{ color: @nexus_accent; }}
+.launcher row:selected .launch-arrow {{ color: @nexus_accent_fg; }}
 .launcher .app-name {{ font-size: 15px; font-weight: 600; }}
 .launcher .app-description {{ font-size: 12px; color: @nexus_muted; }}
 .launcher .results-heading {{ padding: 0 24px 6px; font-size: 10px; }}
@@ -251,6 +306,91 @@ pub fn apply_wallpaper(path: &str) -> Result<()> {
     *old = Some(child);
     Ok(())
 }
+fn gsettings(args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new("gsettings");
+    cmd.args(args).stdin(Stdio::null()).stderr(Stdio::null());
+    // A disabled bus address would make dconf drop the write; without one, GLib
+    // finds the session bus the desktop's applications share.
+    if std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok_and(|a| a.starts_with("disabled:")) {
+        cmd.env_remove("DBUS_SESSION_BUS_ADDRESS");
+    }
+    let out = cmd.output().ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .trim_matches('\'')
+            .to_string()
+    })
+}
+fn theme_exists(name: &str) -> bool {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let data =
+        std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    [home.join(".themes"), home.join(".local/share/themes")]
+        .into_iter()
+        .chain(data.split(':').map(|d| PathBuf::from(d).join("themes")))
+        .any(|dir| dir.join(name).is_dir())
+}
+/// Light or dark sibling of a GTK theme, e.g. Arc ↔ Arc-Dark, Adwaita ↔ Adwaita-dark.
+fn paired_theme(current: &str, dark: bool, exists: impl Fn(&str) -> bool) -> String {
+    let base = current
+        .strip_suffix("-Dark")
+        .or_else(|| current.strip_suffix("-dark"))
+        .unwrap_or(current);
+    if !dark {
+        return base.to_string();
+    }
+    if base == "Adwaita" {
+        return "Adwaita-dark".into();
+    }
+    [format!("{base}-Dark"), format!("{base}-dark")]
+        .into_iter()
+        .find(|t| exists(t))
+        .unwrap_or_else(|| current.to_string())
+}
+/// Sets `key=value` under [Settings], replacing an existing entry.
+fn set_ini(text: &str, key: &str, value: &str) -> String {
+    let line = format!("{key}={value}");
+    let mut out: Vec<String> = text.lines().map(str::to_string).collect();
+    if let Some(l) = out
+        .iter_mut()
+        .find(|l| l.split('=').next().is_some_and(|k| k.trim() == key))
+    {
+        *l = line;
+    } else if let Some(i) = out.iter().position(|l| l.trim() == "[Settings]") {
+        out.insert(i + 1, line);
+    } else {
+        out.insert(0, "[Settings]".into());
+        out.insert(1, line);
+    }
+    out.join("\n") + "\n"
+}
+/// Switches the whole desktop: GSettings is relayed live by the settings portal to
+/// GTK, libadwaita, Chromium, Firefox and Electron; settings.ini covers the rest.
+fn apply_desktop_mode(dark: bool) {
+    let current = gsettings(&["get", "org.gnome.desktop.interface", "gtk-theme"])
+        .unwrap_or_else(|| "Adwaita".into());
+    let theme = paired_theme(&current, dark, theme_exists);
+    let scheme = if dark { "prefer-dark" } else { "prefer-light" };
+    gsettings(&["set", "org.gnome.desktop.interface", "color-scheme", scheme]);
+    gsettings(&["set", "org.gnome.desktop.interface", "gtk-theme", &theme]);
+    let config = config_dir().parent().map(PathBuf::from).unwrap_or_default();
+    for version in ["gtk-3.0", "gtk-4.0"] {
+        let path = config.join(version).join("settings.ini");
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let text = set_ini(&text, "gtk-theme-name", &theme);
+        let text = set_ini(
+            &text,
+            "gtk-application-prefer-dark-theme",
+            if dark { "1" } else { "0" },
+        );
+        if fs::create_dir_all(config.join(version)).is_ok() {
+            let _ = fs::write(&path, text);
+        }
+    }
+}
 pub fn save(mut settings: Settings) -> Result<Settings> {
     if !["dark", "light"].contains(&settings.mode.as_str()) {
         bail!("Unknown theme mode");
@@ -284,20 +424,9 @@ pub fn save(mut settings: Settings) -> Result<Settings> {
         serde_json::to_vec_pretty(&settings)?,
     )?;
     fs::rename(dir.join("settings.json.tmp"), dir.join("settings.json"))?;
-    let _ = Command::new("gsettings")
-        .args([
-            "set",
-            "org.gnome.desktop.interface",
-            "color-scheme",
-            if settings.mode == "dark" {
-                "prefer-dark"
-            } else {
-                "prefer-light"
-            },
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    if old.mode != settings.mode {
+        apply_desktop_mode(settings.mode == "dark");
+    }
     Ok(settings)
 }
 #[cfg(test)]
@@ -310,6 +439,51 @@ mod tests {
             ..Settings::default()
         };
         assert!(save(s).is_err());
+    }
+    #[test]
+    fn gtk_theme_follows_the_mode() {
+        let exists = |t: &str| t == "Arc-Dark";
+        assert_eq!(paired_theme("Arc", true, exists), "Arc-Dark");
+        assert_eq!(paired_theme("Arc-Dark", false, exists), "Arc");
+        assert_eq!(paired_theme("Adwaita", true, exists), "Adwaita-dark");
+        assert_eq!(paired_theme("Adwaita-dark", false, exists), "Adwaita");
+        // Without a dark sibling the theme is kept; color-scheme still switches.
+        assert_eq!(paired_theme("Breeze", true, exists), "Breeze");
+    }
+    #[test]
+    fn settings_ini_keys_are_replaced_or_added() {
+        let ini = "[Settings]\ngtk-theme-name=Arc-Dark\ngtk-font-name=Sans 11\n";
+        let ini = set_ini(ini, "gtk-theme-name", "Arc");
+        let ini = set_ini(&ini, "gtk-application-prefer-dark-theme", "0");
+        assert_eq!(
+            ini,
+            "[Settings]\ngtk-application-prefer-dark-theme=0\ngtk-theme-name=Arc\ngtk-font-name=Sans 11\n"
+        );
+        assert_eq!(set_ini("", "a", "1"), "[Settings]\na=1\n");
+    }
+    #[test]
+    fn accent_text_stays_readable_in_both_modes() {
+        for accent in ["#58a0b8", "#40585a", "#e8e0a0", "#91b5a4"] {
+            for bg in ["#f3f4f0", "#151a18"] {
+                let c = readable_on(rgb(accent), rgb(bg));
+                assert!(contrast(c, rgb(bg)) >= 3.5, "{accent} on {bg}");
+            }
+        }
+        // Dark accents get white text, light accents dark text.
+        assert!(
+            css(&Settings {
+                accent: "#40585a".into(),
+                ..Settings::default()
+            })
+            .contains("nexus_on_accent #ffffff")
+        );
+        assert!(
+            css(&Settings {
+                accent: "#e8e0a0".into(),
+                ..Settings::default()
+            })
+            .contains("nexus_on_accent #16201b")
+        );
     }
     #[test]
     fn generated_accent_is_stable() {

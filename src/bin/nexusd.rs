@@ -215,6 +215,7 @@ fn poll_audio(state: &Mutex<Snapshot>) {
     let volume = backend::volume(false);
     let mic = backend::volume(true);
     let light = backend::brightness();
+    let night_light = backend::night_light();
     let outputs = backend::audio_devices("sinks").unwrap_or_default();
     let inputs = backend::audio_devices("sources").unwrap_or_default();
     let streams = backend::app_streams();
@@ -251,6 +252,16 @@ fn poll_audio(state: &Mutex<Snapshot>) {
         Err(e) => {
             s.brightness = None;
             s.brightness_error = Some(e.to_string());
+        }
+    }
+    match night_light {
+        Ok(v) => {
+            s.night_light = Some(v);
+            s.night_light_error = None;
+        }
+        Err(e) => {
+            s.night_light = None;
+            s.night_light_error = Some(e.to_string());
         }
     }
 }

@@ -561,6 +561,33 @@ impl Backend {
                     &["--class=backlight", "set", &format!("{n}%")],
                 )?;
             }
+            "night-light" => {
+                if parse_bool(value)? {
+                    // A daytime profile leaves a near-neutral temperature behind.
+                    if night_light()?.temperature >= 6000 {
+                        sunset(&["temperature", "4000"])?;
+                    }
+                    sunset(&["identity", "false"])?;
+                } else {
+                    sunset(&["identity", "true"])?;
+                }
+            }
+            "night-light-temperature" => {
+                let k = value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|k| (NIGHT_LIGHT_MIN..=NIGHT_LIGHT_MAX).contains(k))
+                    .with_context(|| {
+                        format!(
+                            "Temperature must be between {NIGHT_LIGHT_MIN} and {NIGHT_LIGHT_MAX} K"
+                        )
+                    })?;
+                sunset(&["temperature", &k.to_string()])?;
+            }
+            // Back to the profile hyprsunset.conf schedules for the current time.
+            "night-light-schedule" => {
+                sunset(&["reset"])?;
+            }
             "sleep" | "restart" | "shutdown" => {
                 self.proxy(
                     "org.freedesktop.login1",
@@ -698,6 +725,33 @@ pub fn brightness() -> Result<u8> {
         bail!("No backlight available");
     }
     Ok((current / max * 100.).round() as u8)
+}
+pub const NIGHT_LIGHT_MIN: u16 = 2500;
+pub const NIGHT_LIGHT_MAX: u16 = 6500;
+/// One hyprsunset IPC command through hyprctl.
+fn sunset(args: &[&str]) -> Result<String> {
+    let mut command = vec!["hyprsunset"];
+    command.extend_from_slice(args);
+    let reply = run("hyprctl", &command).map_err(|e| {
+        if e.to_string().contains("Couldn't connect") {
+            anyhow::anyhow!("hyprsunset is not running")
+        } else {
+            e
+        }
+    })?;
+    if reply.starts_with("Invalid") || reply == "invalid command" || reply.starts_with("No profile")
+    {
+        bail!("hyprsunset: {reply}");
+    }
+    Ok(reply)
+}
+pub fn night_light() -> Result<NightLight> {
+    Ok(NightLight {
+        enabled: sunset(&["identity", "get"])? == "false",
+        temperature: sunset(&["temperature"])?
+            .parse()
+            .context("Unexpected hyprsunset temperature")?,
+    })
 }
 #[cfg(test)]
 mod tests {

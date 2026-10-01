@@ -7,7 +7,7 @@ A complete, quiet shell for Hyprland. The bar, application launcher, settings pa
 - **Wi-Fi** — ConnMan networks, signal, radio, scanning, connect/disconnect and forget. Credentials are requested through a D-Bus agent and kept out of command-line arguments, logs and Nexus settings.
 - **Bluetooth** — BlueZ discovery, pairing with PIN/passkey confirmation, connect/disconnect and forget.
 - **Sound** — PipeWire output and microphone levels, mute and device selection, plus a level and mute switch for each application playing sound.
-- **Display** — backlight brightness with `brightnessctl`.
+- **Display** — backlight brightness with `brightnessctl`, and a night light (on/off, colour temperature, return to schedule) driving `hyprsunset` over its IPC.
 - **Appearance** — light/dark, PNG/JPEG/WebP wallpaper picker, optional wallpaper-derived accent shared by the bar, launcher and settings.
 - **Power** — full-screen Sleep / Restart / Shutdown chooser, with confirmation. Uses login1 (elogind or systemd-logind), without shelling out to sudo.
 
@@ -73,7 +73,7 @@ Wallpaper colors are opt-in. Images are quantized into color buckets to obtain a
 
 ## Architecture and limits
 
-`nexusd` talks to ConnMan, BlueZ and login1 over the system bus via `zbus`. Audio and backlight helpers run with argument arrays and bounded execution time. Independent background pollers isolate each subsystem. The shell uses GTK4 layer-shell surfaces for the reserved top bar, the launcher panel that drops from its center and the full-screen power chooser. The Wi-Fi, Bluetooth, Sound, Display and Appearance pages live in a separate control center window (class `nexus`, title `Nexus`); on Hyprland, float it with a window rule such as `hl.window_rule({ name = "nexus-control-float", match = { class = "^(nexus)$", title = "^(Nexus)$" }, float = true, size = "900 640" })`. Application discovery and launching use GIO desktop entries (including their icons and launch flags), without interpreting search text as commands. Usage history is stored locally in `$XDG_STATE_HOME/nexus/launcher.json`.
+`nexusd` talks to ConnMan, BlueZ and login1 over the system bus via `zbus`. Audio and backlight helpers run with argument arrays and bounded execution time. Independent background pollers isolate each subsystem. The shell uses GTK4 layer-shell surfaces for the reserved top bar, the launcher panel that drops from its center and the full-screen power chooser. The Wi-Fi, Bluetooth, Sound, Display and Appearance pages live in a separate control center window (class `io.github.vitrixxl.Nexus`, title `Nexus`); on Hyprland, float it with a window rule such as `hl.window_rule({ name = "nexus-control-float", match = { class = "^(io\\.github\\.vitrixxl\\.Nexus)$", title = "^(Nexus)$" }, float = true, size = "900 640" })`. Application discovery and launching use GIO desktop entries (including their icons and launch flags), without interpreting search text as commands. Usage history is stored locally in `$XDG_STATE_HOME/nexus/launcher.json`.
 
 The GUI communicates over newline-delimited JSON on a mode-0600 socket in a mode-0700 `$XDG_RUNTIME_DIR/nexus` directory. Pairing and credential prompts expire after 90 seconds. All processes run as the desktop user.
 
