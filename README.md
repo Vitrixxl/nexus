@@ -16,7 +16,7 @@ The UI is entirely in English. A singleton daemon keeps state and the applicatio
 ## Install
 
 Build dependencies: a current stable Rust toolchain, a C compiler, `pkgconf`, GTK 4.10 or later, and `gtk4-layer-shell`.
-Runtime dependencies: `connman`, `bluez`, `pipewire`, `wireplumber`, `libpulse` (`pactl`), `brightnessctl`, `swaybg`, `coreutils`, `procps-ng`, `polkit`, plus **elogind on Artix** or **systemd-logind on Arch**. The shell requires Wayland with the layer-shell protocol (Hyprland supports it).
+Runtime dependencies: `connman`, `bluez`, `pipewire`, `wireplumber`, `libpulse` (`pactl`), `brightnessctl`, `swaybg`, `coreutils`, `procps-ng`, `polkit`, plus **elogind on Artix** or **systemd-logind on Arch**. Optional: `adw-gtk-theme` (adw-gtk3) to carry the Nexus colours into GTK applications and browsers. The shell requires Wayland with the layer-shell protocol (Hyprland supports it).
 
 ```sh
 git clone https://github.com/Vitrixxl/nexus.git
@@ -67,7 +67,9 @@ busctl --system call org.freedesktop.login1 /org/freedesktop/login1 org.freedesk
 
 ## Themes / wallpapers
 
-Settings live in `$XDG_CONFIG_HOME/nexus/settings.json` (default `~/.config/nexus`). The daemon generates `gtk.css`; the persistent shell applies theme changes live across the bar and all panels. Nexus also sets the desktop light/dark preference when a session bus is available; arbitrary third-party applications are not recolored.
+Settings live in `$XDG_CONFIG_HOME/nexus/settings.json` (default `~/.config/nexus`). The daemon generates `gtk.css`; the persistent shell applies theme changes live across the bar and all panels. Nexus also sets the desktop light/dark preference when a session bus is available.
+
+When adw-gtk3 is installed (system-wide or in `~/.local/share/themes`), Nexus generates the `Nexus` / `Nexus-dark` GTK 3/4 themes on top of it with the same surfaces and accent, selects them, and writes the matching libadwaita colours inside a marked block of `~/.config/gtk-4.0/gtk.css` (the rest of that file is kept). Chromium-based browsers set to the GTK theme (Brave: Settings › Appearance › Theme › GTK) use the same colours. Running GTK 3 applications follow accent changes live; libadwaita applications pick up new colours when restarted. Other third-party applications are not recolored.
 
 Wallpaper colors are opt-in. Images are quantized into color buckets to obtain a deterministic accent, with light/dark surfaces selected independently for legibility. Wallpaper rendering uses `swaybg` across outputs. Selecting an image replaces the legacy `mpvpaper` wallpaper; until then the existing wallpaper is retained. A selected image is restored at the next session. Video wallpaper selection is not yet supported.
 

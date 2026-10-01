@@ -13,15 +13,17 @@ pub struct Surface {
     pub page: RefCell<String>,
 }
 const FILLET: i32 = 14;
-/// Bottom edge of the bar (8px margin + 34px height), less 1px so the panel joins it.
-const BAR_BOTTOM: i32 = 41;
+/// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
+/// so the panel joins it.
+const BAR_BOTTOM: i32 = 33;
 /// Share of the monitor width left empty on each side of the bar.
 const BAR_INSET: f64 = 0.15;
 /// Room around the panel for its drop shadow; margins are not part of the input
 /// target, so clicks there still reach the dismissing backdrop.
 const SHADOW: i32 = 64;
-/// Concave corner joining the bar's bottom edge to the side of a dropped panel,
-/// so the panel flows out of the bar instead of meeting it at a right angle.
+/// Concave corner joining a top edge to the side of the surface hanging from it:
+/// the bar from the screen edge, and a dropped panel from the bar, so each flows
+/// out of the edge above instead of meeting it at a right angle.
 fn fillet(right: bool) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.add_css_class("panel-fillet");
@@ -291,11 +293,11 @@ impl Bars {
         for edge in [Edge::Top, Edge::Left, Edge::Right] {
             window.set_anchor(edge, true);
         }
-        window.set_margin(Edge::Top, 8);
-        // A little narrower than the screen and centred.
+        // A little narrower than the screen and centred, hanging from its top edge;
+        // the margins leave room for the fillets on each side.
         let side = ((f64::from(monitor.geometry().width()) * BAR_INSET).round() as i32).max(12);
-        window.set_margin(Edge::Left, side);
-        window.set_margin(Edge::Right, side);
+        window.set_margin(Edge::Left, side - FILLET);
+        window.set_margin(Edge::Right, side - FILLET);
         window.auto_exclusive_zone_enable();
         let center = gtk::CenterBox::new();
         center.add_css_class("bar-content");
@@ -340,7 +342,13 @@ impl Bars {
             right.append(&b.button);
         }
         center.set_end_widget(Some(&right));
-        window.set_child(Some(&center));
+        center.add_css_class("bar-body");
+        center.set_hexpand(true);
+        let shape = hbox(0);
+        shape.append(&fillet(false));
+        shape.append(&center);
+        shape.append(&fillet(true));
+        window.set_child(Some(&shape));
         window.present();
         Bar {
             monitor: monitor.clone(),

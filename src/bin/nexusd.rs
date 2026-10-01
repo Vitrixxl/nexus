@@ -35,6 +35,10 @@ fn main() -> anyhow::Result<()> {
     launcher::watch(catalogue.clone());
     let settings = theme::load();
     theme::write_theme(&settings)?;
+    {
+        let settings = settings.clone();
+        thread::spawn(move || theme::sync_desktop(&settings));
+    }
     let state = Arc::new(Mutex::new(Snapshot {
         settings: settings.clone(),
         ..Snapshot::default()
