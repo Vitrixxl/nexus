@@ -69,7 +69,13 @@ busctl --system call org.freedesktop.login1 /org/freedesktop/login1 org.freedesk
 
 Settings live in `$XDG_CONFIG_HOME/nexus/settings.json` (default `~/.config/nexus`). The daemon generates `gtk.css`; the persistent shell applies theme changes live across the bar and all panels. Nexus also sets the desktop light/dark preference when a session bus is available.
 
-When adw-gtk3 is installed (system-wide or in `~/.local/share/themes`), Nexus generates the `Nexus` / `Nexus-dark` GTK 3/4 themes on top of it with the same surfaces and accent, selects them, and writes the matching libadwaita colours inside a marked block of `~/.config/gtk-4.0/gtk.css` (the rest of that file is kept). Chromium-based browsers set to the GTK theme (Brave: Settings › Appearance › Theme › GTK) use the same colours. Running GTK 3 applications follow accent changes live; libadwaita applications pick up new colours when restarted. Other third-party applications are not recolored.
+When adw-gtk3 is installed (system-wide or in `~/.local/share/themes`), Nexus generates the `Nexus` / `Nexus-dark` GTK 3/4 themes on top of it with the same surfaces and accent, selects them, and writes the matching libadwaita colours inside a marked block of `~/.config/gtk-4.0/gtk.css` (the rest of that file is kept). Chromium-based browsers set to the GTK theme (Brave: Settings › Appearance › Theme › GTK) use the same colours. Running GTK 3 applications follow accent changes live; libadwaita applications pick up new colours when restarted. Nexus also writes colours for applications outside GTK:
+
+- **foot**: `~/.config/nexus/foot.ini` with `[colors-dark]` and `[colors-light]`; add `include=~/.config/nexus/foot.ini` to `foot.ini`. Open windows switch mode live (SIGUSR1/SIGUSR2); accent changes apply to new windows.
+- **Neovim**: the `nexus` colorscheme in `~/.local/share/nvim/site/colors/nexus.lua`. Reload it when the file changes, e.g. with a `vim.uv.new_fs_event()` watcher on that directory.
+- **Equibop / Vesktop**: a marked block at the top of their QuickCSS, overriding the colour variables of the [midnight](https://github.com/refact0r/midnight-discord) theme it imports. The clients reload QuickCSS live.
+
+Other third-party applications are not recolored.
 
 Wallpaper colors are opt-in. Images are quantized into color buckets to obtain a deterministic accent, with light/dark surfaces selected independently for legibility. Wallpaper rendering uses `swaybg` across outputs. Selecting an image replaces the legacy `mpvpaper` wallpaper; until then the existing wallpaper is retained. A selected image is restored at the next session. Video wallpaper selection is not yet supported.
 

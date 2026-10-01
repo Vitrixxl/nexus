@@ -41,7 +41,7 @@ pub fn palette(settings: &Settings) -> (&str, &str, &str, &str) {
     palette_for(settings.mode != "light")
 }
 /// Background, surface, text and secondary text colours.
-fn palette_for(dark: bool) -> (&'static str, &'static str, &'static str, &'static str) {
+pub(crate) fn palette_for(dark: bool) -> (&'static str, &'static str, &'static str, &'static str) {
     if dark {
         ("#151a18", "#202724", "#edf2ee", "#9ba9a1")
     } else {
@@ -81,14 +81,14 @@ pub fn accent_for(path: &str) -> Result<String> {
         b * 24 + 64
     ))
 }
-fn rgb(hex: &str) -> [f64; 3] {
+pub(crate) fn rgb(hex: &str) -> [f64; 3] {
     let hex = hex.trim_start_matches('#');
     let channel = |i: usize| {
         u8::from_str_radix(hex.get(i..i + 2).unwrap_or("80"), 16).unwrap_or(128) as f64 / 255.
     };
     [channel(0), channel(2), channel(4)]
 }
-fn hex([r, g, b]: [f64; 3]) -> String {
+pub(crate) fn hex([r, g, b]: [f64; 3]) -> String {
     let c = |v: f64| (v.clamp(0., 1.) * 255.).round() as u8;
     format!("#{:02x}{:02x}{:02x}", c(r), c(g), c(b))
 }
@@ -108,7 +108,7 @@ fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 /// The accent shifted toward black or white until it reads as text on `bg`.
-fn readable_on(accent: [f64; 3], bg: [f64; 3]) -> [f64; 3] {
+pub(crate) fn readable_on(accent: [f64; 3], bg: [f64; 3]) -> [f64; 3] {
     let target = if luminance(bg) > 0.5 { 0. } else { 1. };
     let mut c = accent;
     for _ in 0..10 {
@@ -119,11 +119,11 @@ fn readable_on(accent: [f64; 3], bg: [f64; 3]) -> [f64; 3] {
     }
     c
 }
-fn mix(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+pub(crate) fn mix(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
 }
 /// Text and icons drawn on an accent fill.
-fn on_accent(accent: [f64; 3]) -> &'static str {
+pub(crate) fn on_accent(accent: [f64; 3]) -> &'static str {
     if contrast(accent, rgb("#16201b")) >= contrast(accent, [1.; 3]) {
         "#16201b"
     } else {
@@ -276,6 +276,9 @@ pub fn write_theme(s: &Settings) -> Result<()> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
     fs::write(dir.join("gtk.css"), css(s))?;
+    if let Err(e) = crate::apps::write(s) {
+        eprintln!("Could not write the terminal colours: {e}");
+    }
     Ok(())
 }
 static WALLPAPER: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
@@ -385,22 +388,25 @@ fn color_vars(colors: &[(&str, String)]) -> String {
         .collect();
     format!(":root {{ {} }}\n", vars.join(" "))
 }
-fn data_home() -> PathBuf {
+pub(crate) fn data_home() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".local/share"))
 }
-fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("css.tmp");
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
     fs::write(&tmp, contents)?;
     fs::rename(tmp, path)?;
     Ok(())
 }
 /// Replaces the Nexus block of a user stylesheet, keeping everything around it.
-fn replace_block(text: &str, block: &str) -> String {
+/// A new block goes at the end, or at the start for blocks holding an @import.
+pub(crate) fn replace_block(text: &str, block: &str, at_start: bool) -> String {
     let block = format!("{BLOCK_BEGIN}\n{block}{BLOCK_END}\n");
     match (text.find(BLOCK_BEGIN), text.find(BLOCK_END)) {
         (Some(start), Some(end)) if start < end => {
@@ -408,6 +414,7 @@ fn replace_block(text: &str, block: &str) -> String {
             format!("{}{block}{rest}", &text[..start])
         }
         _ if text.trim().is_empty() => block,
+        _ if at_start => format!("{block}\n{text}"),
         _ => format!("{}\n\n{block}", text.trim_end()),
     }
 }
@@ -466,7 +473,7 @@ fn write_desktop_theme(s: &Settings) -> Result<bool> {
         color_vars(&dark)
     );
     let text = fs::read_to_string(&user_css).unwrap_or_default();
-    write_atomic(&user_css, &replace_block(&text, &block))?;
+    write_atomic(&user_css, &replace_block(&text, &block, false))?;
     Ok(true)
 }
 /// Writes the desktop theme for the current settings and selects it. Running
@@ -618,6 +625,9 @@ pub fn save(mut settings: Settings) -> Result<Settings> {
         });
         apply_desktop_mode(settings.mode == "dark", themed, true);
     }
+    if old.mode != settings.mode {
+        crate::apps::signal_foot(settings.mode == "dark");
+    }
     Ok(settings)
 }
 #[cfg(test)]
@@ -689,18 +699,22 @@ mod tests {
     }
     #[test]
     fn user_stylesheet_keeps_its_own_rules() {
-        let once = replace_block("label { color: red; }\n", "a\n");
+        let once = replace_block("label { color: red; }\n", "a\n", false);
         assert_eq!(
             once,
             format!("label {{ color: red; }}\n\n{BLOCK_BEGIN}\na\n{BLOCK_END}\n")
         );
-        let twice = replace_block(&(once + "button {}\n"), "b\n");
+        let twice = replace_block(&(once + "button {}\n"), "b\n", false);
         assert_eq!(
             twice,
             format!("label {{ color: red; }}\n\n{BLOCK_BEGIN}\nb\n{BLOCK_END}\nbutton {{}}\n")
         );
         assert_eq!(
-            replace_block("", "a\n"),
+            replace_block("p {}\n", "@import x;\n", true),
+            format!("{BLOCK_BEGIN}\n@import x;\n{BLOCK_END}\n\np {{}}\n")
+        );
+        assert_eq!(
+            replace_block("", "a\n", false),
             format!("{BLOCK_BEGIN}\na\n{BLOCK_END}\n")
         );
     }

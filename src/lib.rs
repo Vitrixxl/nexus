@@ -1,3 +1,4 @@
+pub mod apps;
 pub mod backend;
 pub mod launcher;
 pub mod theme;
