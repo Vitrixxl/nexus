@@ -270,6 +270,9 @@ window.power-overlay {{ background: alpha(#080d0a, 0.72); }}
 .nexus button.power-tile.danger {{ color: @nexus_danger; }}
 .nexus button.power-tile.danger.selected {{ background: mix(@nexus_bg, @nexus_error, 0.18); }}
 {power_entrances}
+window.screenshot {{ background: transparent; }}
+/* The selection lets the screen through; its spread shadow dims everything else. */
+.screenshot-selection {{ border: 2px solid @nexus_accent; border-radius: 0; box-shadow: 0 0 0 10000px alpha(@nexus_bg, 0.55); }}
 window.prompt-window {{ background: transparent; }}
 .nexus .prompt {{ background: @nexus_bg; border-radius: 18px; padding: 24px; border: 1px solid alpha(@nexus_fg, 0.1); }}
 .nexus .prompt .title {{ font-size: 20px; }}

@@ -10,6 +10,7 @@ A complete, quiet shell for Hyprland. The bar, application launcher, settings pa
 - **Sound** — PipeWire output and microphone levels, mute and device selection, plus a level and mute switch for each application playing sound.
 - **Display** — backlight brightness with `brightnessctl`, and a night light (on/off, colour temperature, return to schedule) driving `hyprsunset` over its IPC.
 - **Appearance** — light/dark, PNG/JPEG/WebP wallpaper picker, optional wallpaper-derived accent shared by the bar, launcher and settings.
+- **Screenshots** — `nexus screenshot` dims every monitor and highlights the window under the pointer; click to capture it, drag to capture an area, Escape, a right click or the same shortcut again to cancel. The screen is frozen at the moment of the shortcut, or stays live with `--live` and is captured on release. The PNG goes to the clipboard, and with `--save` also to `~/Pictures/screenshots`; a notification shows a thumbnail. `screen` and `window` capture the focused monitor or the active window at once. Outputs are copied in memory through wlr-screencopy and the picker's windows stay ready in the shell, so it opens within a few frames and animates at the display's refresh rate in the Nexus colours.
 - **Lock screen** — `nexus lock` locks every monitor with the Wayland session-lock protocol: wallpaper, a small padlock, the time and date. The password field appears as you type, each character drawn as a small shape that pops in and shrinks away when erased; the shapes ripple while PAM checks the password, the field shakes on a refusal and the padlock opens on success. Caps Lock and PAM messages (such as a faillock lockout) are shown.
 - **Power** — full-screen Sleep / Restart / Shutdown chooser, with confirmation. Uses login1 (elogind or systemd-logind), without shelling out to sudo.
 
@@ -18,7 +19,7 @@ The UI is entirely in English. A singleton daemon keeps state and the applicatio
 ## Install
 
 Build dependencies: a current stable Rust toolchain, a C compiler, `pkgconf`, GTK 4.10 or later, and `gtk4-layer-shell`.
-Runtime dependencies: `connman`, `bluez`, `pipewire`, `wireplumber`, `libpulse` (`pactl`), `brightnessctl`, `swaybg`, `coreutils`, `procps-ng`, `polkit`, plus **elogind on Artix** or **systemd-logind on Arch**. Optional: `adw-gtk-theme` (adw-gtk3) to carry the Nexus colours into GTK applications and browsers. The shell requires Wayland with the layer-shell protocol (Hyprland supports it).
+Runtime dependencies: `connman`, `bluez`, `pipewire`, `wireplumber`, `libpulse` (`pactl`), `brightnessctl`, `swaybg`, `wl-clipboard`, `coreutils`, `procps-ng`, `polkit`, plus **elogind on Artix** or **systemd-logind on Arch**. Optional: `adw-gtk-theme` (adw-gtk3) to carry the Nexus colours into GTK applications and browsers. The shell requires Wayland with the layer-shell protocol (Hyprland supports it).
 
 ```sh
 git clone https://github.com/Vitrixxl/nexus.git
@@ -45,11 +46,14 @@ nexus display
 nexus appearance
 nexus power               # full-screen power chooser
 nexus notifications       # toggle the notification list
+nexus screenshot          # pick a window or an area on the frozen screen
+nexus screenshot --live --save   # on the live screen, also saved to ~/Pictures/screenshots
+nexus screenshot screen   # focused monitor at once (window: active window)
 nexus lock                # lock the session
 nexus status             # JSON diagnostics, without passwords
 ```
 
-Hyprland Lua startup: `hl.exec_cmd("~/.local/bin/nexus-session")` as the first command inside the `hyprland.start` handler. The bar maps without waiting for the daemon; application discovery and hardware state load in the background. Later shortcuts activate the resident shell directly, without a daemon round trip. The dotfiles replace Fuzzel with the integrated launcher on `Super+D` / `Super+Space`, and add `Super+N` for the control center, `Super+W` for Wi-Fi, `Super+Alt+N/B/A/P` for Nexus / Bluetooth / Sound / Power and `Ctrl+Alt+Delete` for Power. Hyprland's live and repository configs remain separate files.
+Hyprland Lua startup: `hl.exec_cmd("~/.local/bin/nexus-session")` as the first command inside the `hyprland.start` handler. The bar maps without waiting for the daemon; application discovery and hardware state load in the background. Later shortcuts activate the resident shell directly, without a daemon round trip. The dotfiles replace Fuzzel with the integrated launcher on `Super+D` / `Super+Space`, and add `Super+N` for the control center, `Super+W` for Wi-Fi, `Super+Alt+N/B/A/P` for Nexus / Bluetooth / Sound / Power and `Ctrl+Alt+Delete` for Power. Hyprland's live and repository configs remain separate files. Screenshots: bind `nexus screenshot` (e.g. `Super+Shift+S`, and `Print` for `--live --save`) and turn off Hyprland's layer animation for the picker, which fades itself and whose fade-out would otherwise end up in live captures: `hl.layer_rule({ name = "nexus-screenshot-no-anim", match = { namespace = "^nexus-screenshot$" }, no_anim = true })`.
 
 On systemd desktops you can instead enable the optional service with `systemctl --user enable --now nexusd`. Do not enable both startup methods unnecessarily; a runtime file lock prevents duplicate daemons. Restart the daemon after updating binaries. On runit/OpenRC it is a desktop-session process, not a root service.
 

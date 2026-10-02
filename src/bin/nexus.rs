@@ -1,4 +1,5 @@
 mod lock;
+mod screenshot;
 mod ui;
 use gtk::{gio, glib, prelude::*};
 use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
@@ -35,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus lock\nnexus status\nnexus init-theme"
+            "Nexus — desktop control center\n\nnexus [launcher|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock\nnexus status\nnexus init-theme"
         );
         return Ok(());
     }
@@ -61,19 +62,31 @@ fn main() -> anyhow::Result<()> {
     .map(String::as_str)
     .unwrap_or("launcher");
     if !PAGES.iter().any(|p| p.0 == page)
-        && !["launcher", "control", "notifications", "shell", "close"].contains(&page)
+        && ![
+            "launcher",
+            "control",
+            "notifications",
+            "screenshot",
+            "shell",
+            "close",
+        ]
+        .contains(&page)
     {
         anyhow::bail!("Unknown page: {page}");
     }
-    let activation =
-        if page == "launcher" && args.first().is_some_and(|s| s == "launcher") && args.len() > 1 {
-            format!(
-                "launcher\t{}",
-                args[1..].join(" ").replace(['\n', '\r', '\t'], " ")
-            )
-        } else {
-            page.to_string()
-        };
+    let activation = if page == "screenshot" {
+        let options = args[1..].join(" ");
+        screenshot::Options::parse(&options).map_err(anyhow::Error::msg)?;
+        format!("screenshot\t{options}")
+    } else if page == "launcher" && args.first().is_some_and(|s| s == "launcher") && args.len() > 1
+    {
+        format!(
+            "launcher\t{}",
+            args[1..].join(" ").replace(['\n', '\r', '\t'], " ")
+        )
+    } else {
+        page.to_string()
+    };
     let socket = runtime()?.join("ui.sock");
     if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) {
         writeln!(stream, "{activation}")?;
@@ -970,7 +983,12 @@ fn build(
             }
         });
     }
-    if initial != "shell" {
+    let shot = screenshot::Screenshot::new(app, server.clone());
+    if initial == "screenshot" {
+        if let Ok(options) = screenshot::Options::parse(initial_query) {
+            shot.take(options);
+        }
+    } else if initial != "shell" {
         open(initial, None);
         if initial == "launcher" {
             launcher.search.set_text(initial_query);
@@ -1025,6 +1043,11 @@ fn build(
             let (page, query) = message.split_once('\t').unwrap_or((&message, ""));
             if page == "close" {
                 command_shell.hide();
+            } else if page == "screenshot" {
+                match screenshot::Options::parse(query) {
+                    Ok(options) => shot.take(options),
+                    Err(e) => eprintln!("{e}"),
+                }
             } else if page == "launcher" && !query.is_empty() {
                 command_shell.show(page, command_monitor.borrow().as_ref());
                 command_search.set_text(query);
