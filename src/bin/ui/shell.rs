@@ -18,6 +18,8 @@ pub struct Surface {
     closing: Cell<bool>,
 }
 const FILLET: i32 = 14;
+/// The bar's fillets sweep further along the screen edge than down its sides.
+const BAR_FILLET: i32 = 30;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
 /// so the panel joins it.
 const BAR_BOTTOM: i32 = 33;
@@ -28,11 +30,13 @@ const BAR_INSET: f64 = 0.15;
 const SHADOW: i32 = 64;
 /// Concave corner joining a top edge to the side of the surface hanging from it:
 /// the bar from the screen edge, and a dropped panel from the bar, so each flows
-/// out of the edge above instead of meeting it at a right angle.
-fn fillet(right: bool) -> gtk::DrawingArea {
+/// out of the edge above instead of meeting it at a right angle. It is `width`
+/// wide plus a solid column laid over the surface's edge, so no seam shows
+/// between the two at fractional scales.
+fn fillet(right: bool, width: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.add_css_class("panel-fillet");
-    area.set_content_width(FILLET);
+    area.set_content_width(width + 1);
     area.set_content_height(FILLET);
     area.set_valign(gtk::Align::Start);
     area.set_draw_func(move |area, cr, w, h| {
@@ -44,15 +48,24 @@ fn fillet(right: bool) -> gtk::DrawingArea {
             f64::from(color.blue()),
             f64::from(color.alpha()),
         );
-        // Square minus a quarter disc centred on the outer bottom corner.
+        // Square minus a quarter ellipse centred on the outer bottom corner.
         use std::f64::consts::{FRAC_PI_2, PI};
+        let quarter = |cr: &gtk::cairo::Context, x: f64, from: f64, to: f64| {
+            cr.save().ok();
+            cr.translate(x, h);
+            cr.scale(w - 1., h);
+            cr.arc_negative(0., 0., 1., from, to);
+            cr.restore().ok();
+        };
         cr.move_to(0., 0.);
         cr.line_to(w, 0.);
         if right {
-            cr.arc_negative(w, h, w, -FRAC_PI_2, -PI);
+            quarter(cr, w, -FRAC_PI_2, -PI);
+            cr.line_to(0., h);
         } else {
             cr.line_to(w, h);
-            cr.arc_negative(0., h, w, 0., -FRAC_PI_2);
+            cr.line_to(w - 1., h);
+            quarter(cr, 0., 0., -FRAC_PI_2);
         }
         cr.close_path();
         let _ = cr.fill();
@@ -102,7 +115,7 @@ impl Surface {
         body.append(&gutters[1]);
         let panel = gtk::Overlay::new();
         panel.set_child(Some(&body));
-        let fillets = [fillet(false), fillet(true)];
+        let fillets = [fillet(false, FILLET), fillet(true, FILLET)];
         for (gutter, (corner, align)) in gutters
             .iter()
             .zip(fillets.iter().zip([gtk::Align::Start, gtk::Align::End]))
@@ -343,9 +356,10 @@ impl Bars {
         }
         // A little narrower than the screen and centred, hanging from its top edge;
         // the margins leave room for the fillets on each side.
-        let side = ((f64::from(monitor.geometry().width()) * BAR_INSET).round() as i32).max(12);
-        window.set_margin(Edge::Left, side - FILLET);
-        window.set_margin(Edge::Right, side - FILLET);
+        let side =
+            ((f64::from(monitor.geometry().width()) * BAR_INSET).round() as i32).max(BAR_FILLET);
+        window.set_margin(Edge::Left, side - BAR_FILLET);
+        window.set_margin(Edge::Right, side - BAR_FILLET);
         window.auto_exclusive_zone_enable();
         let center = gtk::CenterBox::new();
         center.add_css_class("bar-content");
@@ -406,10 +420,15 @@ impl Bars {
         center.set_end_widget(Some(&right));
         center.add_css_class("bar-body");
         center.set_hexpand(true);
-        let shape = hbox(0);
-        shape.append(&fillet(false));
-        shape.append(&center);
-        shape.append(&fillet(true));
+        center.set_margin_start(BAR_FILLET);
+        center.set_margin_end(BAR_FILLET);
+        let shape = gtk::Overlay::new();
+        shape.set_child(Some(&center));
+        for (right, align) in [(false, gtk::Align::Start), (true, gtk::Align::End)] {
+            let corner = fillet(right, BAR_FILLET);
+            corner.set_halign(align);
+            shape.add_overlay(&corner);
+        }
         window.set_child(Some(&shape));
         window.present();
         let (count, quiet) = self.notices.get();
