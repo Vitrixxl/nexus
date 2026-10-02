@@ -1,3 +1,4 @@
+mod lock;
 mod ui;
 use gtk::{gio, glib, prelude::*};
 use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
@@ -34,9 +35,13 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus status\nnexus init-theme"
+            "Nexus — desktop control center\n\nnexus [launcher|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus lock\nnexus status\nnexus init-theme"
         );
         return Ok(());
+    }
+    // The lock runs on its own, so that it holds whatever happens to the shell.
+    if args.first().is_some_and(|a| a == "lock") {
+        return lock::run();
     }
     if args.first().is_some_and(|a| a == "init-theme") {
         theme::write_theme(&theme::load())?;

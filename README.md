@@ -10,6 +10,7 @@ A complete, quiet shell for Hyprland. The bar, application launcher, settings pa
 - **Sound** — PipeWire output and microphone levels, mute and device selection, plus a level and mute switch for each application playing sound.
 - **Display** — backlight brightness with `brightnessctl`, and a night light (on/off, colour temperature, return to schedule) driving `hyprsunset` over its IPC.
 - **Appearance** — light/dark, PNG/JPEG/WebP wallpaper picker, optional wallpaper-derived accent shared by the bar, launcher and settings.
+- **Lock screen** — `nexus lock` locks every monitor with the Wayland session-lock protocol: wallpaper, a small padlock, the time and date. The password field appears as you type, each character drawn as a small shape that pops in and shrinks away when erased; the shapes ripple while PAM checks the password, the field shakes on a refusal and the padlock opens on success. Caps Lock and PAM messages (such as a faillock lockout) are shown.
 - **Power** — full-screen Sleep / Restart / Shutdown chooser, with confirmation. Uses login1 (elogind or systemd-logind), without shelling out to sudo.
 
 The UI is entirely in English. A singleton daemon keeps state and the application catalogue in memory before panels open. GIO monitors desktop entry changes; the shell caches rows and icons. Workspace changes arrive through Hyprland’s event socket rather than a polling timer. The shell stays running when a panel is dismissed. Opening the same page again toggles it closed. Escape dismisses the launcher, power chooser or control center without stopping the bar.
@@ -44,12 +45,17 @@ nexus display
 nexus appearance
 nexus power               # full-screen power chooser
 nexus notifications       # toggle the notification list
+nexus lock                # lock the session
 nexus status             # JSON diagnostics, without passwords
 ```
 
 Hyprland Lua startup: `hl.exec_cmd("~/.local/bin/nexus-session")` as the first command inside the `hyprland.start` handler. The bar maps without waiting for the daemon; application discovery and hardware state load in the background. Later shortcuts activate the resident shell directly, without a daemon round trip. The dotfiles replace Fuzzel with the integrated launcher on `Super+D` / `Super+Space`, and add `Super+N` for the control center, `Super+W` for Wi-Fi, `Super+Alt+N/B/A/P` for Nexus / Bluetooth / Sound / Power and `Ctrl+Alt+Delete` for Power. Hyprland's live and repository configs remain separate files.
 
 On systemd desktops you can instead enable the optional service with `systemctl --user enable --now nexusd`. Do not enable both startup methods unnecessarily; a runtime file lock prevents duplicate daemons. Restart the daemon after updating binaries. On runit/OpenRC it is a desktop-session process, not a root service.
+
+## Lock screen
+
+`nexus lock` runs as its own process, so the lock holds whatever happens to the shell; if it ever dies, the compositor keeps the session locked. A second `nexus lock` while locked does nothing, so it can serve both a shortcut and hypridle (`lock_cmd = nexus lock`). The password is checked with the PAM service `/etc/pam.d/nexus` when it exists, otherwise `login` (the stack hyprlock uses); with `pam_faillock`, repeated failures lock the account for a while, as with any locker.
 
 ## Power without sudo
 
@@ -102,8 +108,9 @@ cargo test --locked
 GDK_BACKEND=x11 xvfb-run -a cargo test --locked --bin nexus keyboard_navigation -- --ignored --test-threads=1
 dbus-run-session -- cargo test --locked --test agents -- --ignored
 dbus-run-session -- cargo test --locked --test notifications -- --ignored
+GDK_BACKEND=x11 xvfb-run -a cargo test --locked --bin nexus lock_view -- --ignored
 ```
 
-D-Bus tests exercise Wi-Fi secret exchange, stale prompt rejection, Bluetooth confirmation/rejection and display-only passkeys on a private bus, without connecting real devices. The notification test sends, replaces, closes and activates notifications over a private bus and checks the signals applications receive. Unit tests cover input validation, search ranking, desktop entry launching, workspace event selection and deterministic theme extraction. The isolated GTK test checks Ctrl+N/P, arrow navigation and Enter launching the selected application through a mock daemon.
+D-Bus tests exercise Wi-Fi secret exchange, stale prompt rejection, Bluetooth confirmation/rejection and display-only passkeys on a private bus, without connecting real devices. The notification test sends, replaces, closes and activates notifications over a private bus and checks the signals applications receive. Unit tests cover input validation, search ranking, desktop entry launching, workspace event selection and deterministic theme extraction. The lock view test drives typing, checking, refusal and unlocking offscreen without locking anything or calling PAM (set `NEXUS_LOCK_FRAMES` to a directory to save its frames). The isolated GTK test checks Ctrl+N/P, arrow navigation and Enter launching the selected application through a mock daemon.
 
 Primary API references: [ConnMan agent](https://git.kernel.org/pub/scm/network/connman/connman.git/tree/doc/agent-api.txt), [BlueZ agent](https://github.com/bluez/bluez/blob/master/doc/org.bluez.Agent.rst), [GTK](https://docs.gtk.org/gtk4/), [login1](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html).

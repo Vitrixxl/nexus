@@ -19,6 +19,7 @@ async-channel = "2"
 async-io = "2"
 futures-lite = "2"
 signal-hook = "0.3"
+gtk4-session-lock = { version = "0.3", features = ["v1_2"] }
 
 [profile.release]
 opt-level = 2

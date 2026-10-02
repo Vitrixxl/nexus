@@ -731,6 +731,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "gtk4-session-lock"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "933f747f4f7d64030f8197a0b1a143ab9f16c67f9c29b26baec8c05978e2af44"
+dependencies = [
+ "gdk4",
+ "glib",
+ "glib-sys",
+ "gtk4",
+ "gtk4-session-lock-sys",
+ "libc",
+]
+
+[[package]]
+name = "gtk4-session-lock-sys"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65ae266bf7f2bee49e117d51cee4970475c41056ce7cd12d3ebb9ecce0486a74"
+dependencies = [
+ "gdk4-sys",
+ "glib-sys",
+ "gobject-sys",
+ "gtk4-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "gtk4-sys"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -906,6 +934,7 @@ dependencies = [
  "futures-lite",
  "gtk4",
  "gtk4-layer-shell",
+ "gtk4-session-lock",
  "image",
  "serde",
  "serde_json",
