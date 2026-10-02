@@ -195,7 +195,9 @@ impl Popups {
         window.set_namespace(Some("nexus-notifications"));
         window.set_layer(Layer::Overlay);
         window.set_keyboard_mode(KeyboardMode::None);
-        // The default exclusive zone keeps the stack clear of the bar.
+        // From the very top of the screen, over the bar and everything else,
+        // rather than pushed down below the bar's exclusive zone.
+        window.set_exclusive_zone(-1);
         window.set_anchor(Edge::Top, true);
         window.set_anchor(Edge::Right, true);
         window.set_margin(Edge::Top, 6);
