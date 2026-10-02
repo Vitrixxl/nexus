@@ -655,7 +655,17 @@ fn show_notices(indicator: &Indicator, count: usize, quiet: bool) {
             (n, _) => format!("{n} notifications"),
         }));
 }
+/// The last battery reading, taken off the UI thread by [`read_battery`].
+static BATTERY: std::sync::Mutex<Option<(u8, bool)>> = std::sync::Mutex::new(None);
 fn battery() -> Option<(u8, bool)> {
+    *BATTERY.lock().unwrap()
+}
+/// Reading `capacity` asks the embedded controller through ACPI, which takes
+/// about 100 ms on some laptops: it must never block the main loop.
+pub fn read_battery() {
+    *BATTERY.lock().unwrap() = query_battery();
+}
+fn query_battery() -> Option<(u8, bool)> {
     for entry in std::fs::read_dir("/sys/class/power_supply").ok()?.flatten() {
         let p = entry.path();
         if std::fs::read_to_string(p.join("type")).ok()?.trim() != "Battery" {

@@ -987,6 +987,7 @@ fn build(
             let _ = tx.send(Event::Done(Err(e.to_string())));
         }
         while running.load(std::sync::atomic::Ordering::Relaxed) {
+            ui::shell::read_battery();
             match request(&Request::Status) {
                 Ok(reply) => {
                     if let Some(state) = reply.state {
