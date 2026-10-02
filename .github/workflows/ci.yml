@@ -8,7 +8,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwayland-dev wayland-protocols meson ninja-build pkg-config dbus-x11 xvfb xauth
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwayland-dev libpam0g-dev wayland-protocols meson ninja-build pkg-config dbus-x11 xvfb xauth
       - name: Build GTK4 layer shell
         run: |
           git clone --depth 1 --branch v1.3.0 https://github.com/wmww/gtk4-layer-shell.git "$RUNNER_TEMP/gtk4-layer-shell"

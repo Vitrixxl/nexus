@@ -18,7 +18,7 @@ The UI is entirely in English. A singleton daemon keeps state and the applicatio
 
 ## Install
 
-Build dependencies: a current stable Rust toolchain, a C compiler, `pkgconf`, GTK 4.10 or later, and `gtk4-layer-shell`.
+Build dependencies: a current stable Rust toolchain, a C compiler, `pkgconf`, GTK 4.10 or later, `gtk4-layer-shell` (1.1 or later, which also provides the session lock library) and the PAM headers (`pam`; `libpam0g-dev` on Debian and Ubuntu).
 Runtime dependencies: `connman`, `bluez`, `pipewire`, `wireplumber`, `libpulse` (`pactl`), `brightnessctl`, `swaybg`, `wl-clipboard`, `coreutils`, `procps-ng`, `polkit`, plus **elogind on Artix** or **systemd-logind on Arch**. Optional: `adw-gtk-theme` (adw-gtk3) to carry the Nexus colours into GTK applications and browsers. The shell requires Wayland with the layer-shell protocol (Hyprland supports it).
 
 ```sh
