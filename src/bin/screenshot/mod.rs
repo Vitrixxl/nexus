@@ -849,7 +849,7 @@ fn export(frame: &Frame, (x, y, w, h): (u32, u32, u32, u32), save: bool) -> Resu
     let mut rgb = Vec::with_capacity(w as usize * h as usize * 3);
     for row in y..y + h {
         let start = row as usize * frame.stride as usize + x as usize * 4;
-        for px in data[start..start + w as usize * 4].chunks_exact(4) {
+        for px in data[start..start + w as usize * 4].as_chunks::<4>().0 {
             rgb.extend_from_slice(&[px[2], px[1], px[0]]);
         }
     }

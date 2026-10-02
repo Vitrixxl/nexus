@@ -211,7 +211,7 @@ impl Session {
 fn normalize(data: &mut [u8], format: wl_shm::Format, width: u32, stride: u32, y_invert: bool) {
     let swap = matches!(format, wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888);
     for row in data.chunks_exact_mut(stride as usize) {
-        for px in row[..width as usize * 4].chunks_exact_mut(4) {
+        for px in row[..width as usize * 4].as_chunks_mut::<4>().0 {
             if swap {
                 px.swap(0, 2);
             }
