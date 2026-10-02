@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# User installation. System dependencies: gtk4, connman, bluez, bluez-utils,
+# User installation. System dependencies: gtk4, networkmanager, bluez, bluez-utils,
 # pipewire, wireplumber, libpulse, brightnessctl, swaybg, gtk4-layer-shell, polkit,
 # elogind (Artix) or systemd-logind (Arch). Build: rust, pkgconf, base-devel.
 set -euo pipefail

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Vitrixxl/nexus"
-description = "A quiet control center for Wayland, powered by Rust and ConnMan"
+description = "A quiet control center for Wayland, powered by Rust and NetworkManager"
 
 [dependencies]
 anyhow = "1"

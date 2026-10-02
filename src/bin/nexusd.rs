@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
         }
     });
     let backend = Arc::new(Backend::new()?);
-    // ConnMan/BlueZ may still be starting with the desktop session. Their D-Bus
+    // NetworkManager/BlueZ may still be starting with the desktop session. Their D-Bus
     // registration must not delay serving the catalogue and cached state.
     {
         let backend = backend.clone();
@@ -60,10 +60,16 @@ fn main() -> anyhow::Result<()> {
         let b = backend.clone();
         let state = state.clone();
         thread::spawn(move || {
+            // NetworkManager forgets its agents when it restarts.
+            let mut reachable = true;
             loop {
                 match subsystem {
                     0 => {
                         let result = b.wifi();
+                        if result.is_ok() && !reachable {
+                            b.register_agents();
+                        }
+                        reachable = result.is_ok();
                         let mut s = state.lock().unwrap();
                         match result {
                             Ok((on, nets)) => {

@@ -186,7 +186,7 @@ fn signal_icon(signal: u8) -> &'static str {
     }
 }
 fn security_label(security: &str) -> &'static str {
-    if security.is_empty() || security == "none" {
+    if matches!(security, "" | "none" | "owe") {
         "Open"
     } else if security.contains("ieee8021x") {
         "Enterprise"
@@ -198,10 +198,10 @@ fn security_label(security: &str) -> &'static str {
 }
 fn state_label(state: &str) -> Option<&'static str> {
     match state {
-        "ready" | "online" => Some("Connected"),
-        "association" | "configuration" => Some("Connecting…"),
-        "disconnect" => Some("Disconnecting…"),
-        "failure" => Some("Connection failed"),
+        "connected" => Some("Connected"),
+        "connecting" => Some("Connecting…"),
+        "disconnecting" => Some("Disconnecting…"),
+        "failed" => Some("Connection failed"),
         _ => None,
     }
 }
@@ -422,7 +422,7 @@ fn audio_dropdown() -> gtk::DropDown {
     dropdown
 }
 fn network_row(ui: &Ui, window: &gtk::ApplicationWindow, net: &Network) -> gtk::Box {
-    let connected = matches!(net.state.as_str(), "ready" | "online");
+    let connected = net.connected();
     let name = if net.name.is_empty() {
         "Hidden network"
     } else {
@@ -443,7 +443,7 @@ fn network_row(ui: &Ui, window: &gtk::ApplicationWindow, net: &Network) -> gtk::
     if net.saved {
         let b = button("Forget");
         b.add_css_class("flat");
-        bind_forget(&b, window, ui, "wifi-forget", &net.path, name);
+        bind_forget(&b, window, ui, "wifi-forget", &net.id, name);
         row.append(&b);
     }
     let b = button(if connected { "Disconnect" } else { "Connect" });
@@ -455,7 +455,7 @@ fn network_row(ui: &Ui, window: &gtk::ApplicationWindow, net: &Network) -> gtk::
             } else {
                 "wifi-connect"
             },
-            &net.path,
+            &net.id,
             "",
         ),
     );
@@ -1106,10 +1106,7 @@ fn build(
                     set_error(&audio_error, s.audio_error.as_deref());
                     set_error(&light_error, s.brightness_error.as_deref());
                     set_error(&night_error, s.night_light_error.as_deref());
-                    let network = s
-                        .networks
-                        .iter()
-                        .find(|n| matches!(n.state.as_str(), "ready" | "online"));
+                    let network = s.networks.iter().find(|n| n.connected());
                     let connected = s.devices.iter().filter(|d| d.connected).count();
                     control.set_detail(
                         "wifi",

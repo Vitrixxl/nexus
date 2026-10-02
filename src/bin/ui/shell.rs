@@ -507,10 +507,7 @@ impl Bars {
         let battery = battery();
         for bar in self.bars.borrow().iter() {
             bar.clock.set_text(&time);
-            let network = s
-                .networks
-                .iter()
-                .find(|n| matches!(n.state.as_str(), "ready" | "online"));
+            let network = s.networks.iter().find(|n| n.connected());
             bar.wifi.icon.set_icon_name(Some(match network {
                 Some(n) => signal_icon(n.signal),
                 None if s.wifi => "network-wireless-offline-symbolic",

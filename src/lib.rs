@@ -18,12 +18,21 @@ use std::{
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Network {
-    pub path: String,
+    /// SSID in hexadecimal: names need not be UTF-8 and one network spans
+    /// several access points.
+    pub id: String,
     pub name: String,
     pub signal: u8,
+    /// none, owe, wep, psk, sae or ieee8021x.
     pub security: String,
+    /// connecting, connected, disconnecting, failed, or empty when idle.
     pub state: String,
     pub saved: bool,
+}
+impl Network {
+    pub fn connected(&self) -> bool {
+        self.state == "connected"
+    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Device {

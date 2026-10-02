@@ -36,23 +36,34 @@ fn wifi_and_bluetooth_prompts_roundtrip() {
             &c,
             "io.github.vitrixxl.NexusTest",
             "/wifi",
-            "net.connman.Agent",
+            "org.freedesktop.NetworkManager.SecretAgent",
         )
         .unwrap();
-        let fields = HashMap::from([(
-            "Passphrase",
-            Value::from(HashMap::from([("Requirement", Value::from("mandatory"))])),
-        )]);
-        proxy.call::<_, _, HashMap<String, OwnedValue>>(
-            "RequestInput",
+        let connection = HashMap::from([
+            (
+                "802-11-wireless",
+                HashMap::from([("ssid", Value::from(b"Home".to_vec()))]),
+            ),
+            (
+                "802-11-wireless-security",
+                HashMap::from([("key-mgmt", Value::from("wpa-psk"))]),
+            ),
+        ]);
+        proxy.call::<_, _, HashMap<String, HashMap<String, OwnedValue>>>(
+            "GetSecrets",
             &(
-                ObjectPath::try_from("/net/connman/service/test").unwrap(),
-                fields,
+                connection,
+                ObjectPath::try_from("/org/freedesktop/NetworkManager/Settings/1").unwrap(),
+                "802-11-wireless-security",
+                Vec::<String>::new(),
+                // ALLOW_INTERACTION | REQUEST_NEW
+                3u32,
             ),
         )
     });
     let p = prompt(&prompts);
     assert_eq!(p.fields, vec!["Passphrase"]);
+    assert!(p.detail.contains("“Home” was not accepted"));
     assert!(prompts.answer(p.id + 1, HashMap::new(), true).is_err());
     prompts
         .answer(
@@ -63,7 +74,7 @@ fn wifi_and_bluetooth_prompts_roundtrip() {
         .unwrap();
     let result = pending.join().unwrap().unwrap();
     assert_eq!(
-        <&str>::try_from(&result["Passphrase"]).unwrap(),
+        <&str>::try_from(&result["802-11-wireless-security"]["psk"]).unwrap(),
         "test-secret"
     );
     assert!(prompts.current().is_none());

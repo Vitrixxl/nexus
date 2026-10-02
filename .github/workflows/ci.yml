@@ -22,3 +22,4 @@ jobs:
       - run: cargo test --locked
       - run: GDK_BACKEND=x11 xvfb-run -a cargo test --locked --bin nexus keyboard_navigation -- --ignored --test-threads=1
       - run: dbus-run-session -- cargo test --locked --test agents -- --ignored
+      - run: dbus-run-session -- cargo test --locked --test networkmanager -- --ignored
