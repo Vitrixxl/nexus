@@ -209,6 +209,8 @@ window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', '
 
 .control-center .sidebar {{ background: @nexus_surface; padding: 10px 12px 12px; border-right: 1px solid alpha(@nexus_fg, 0.05); }}
 .control-center .sidebar-section {{ font-size: 12px; font-weight: 600; color: @nexus_muted; padding: 18px 12px 8px; }}
+.control-center button.control-close {{ min-width: 24px; min-height: 24px; padding: 4px; border-radius: 50%; background: transparent; }}
+.control-center button.control-close:hover {{ background: alpha(@nexus_fg, 0.10); }}
 .control-center separator {{ margin: 0 8px; min-height: 1px; background: alpha(@nexus_fg, 0.07); }}
 .nexus button.nav {{ background: transparent; padding: 9px 10px; border-radius: 12px; color: alpha(@nexus_fg, 0.85); font-size: 15px; font-weight: 500; }}
 .nexus button.nav:hover {{ background: alpha(@nexus_fg, 0.05); color: @nexus_fg; }}
@@ -340,6 +342,16 @@ window.nexus.nexus-bar {{ background: transparent; }}
 .nexus-bar .bar-power {{ color: @nexus_accent_fg; padding: 0 12px; }}
 .nexus-bar .workspace {{ color: @nexus_muted; padding: 0; min-width: 26px; }}
 .nexus-bar .workspace.active {{ background: @nexus_surface; color: @nexus_accent_fg; }}
+.tray-panel {{ padding: 18px; }}
+.battery-panel {{ padding: 18px; }}
+.battery-panel .power-profile {{ padding: 10px 12px; border-radius: 10px; }}
+.battery-panel .power-profile.active {{ background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; }}
+.battery-panel .power-profile .profile-check {{ opacity: 0; }}
+.battery-panel .power-profile.active .profile-check {{ opacity: 1; }}
+.tray-item {{ padding: 10px 12px; }}
+.tray-item.needs-attention {{ background: @nexus_surface; color: @nexus_accent_fg; }}
+.tray-menu button {{ background: transparent; padding: 7px 12px; }}
+.tray-menu button:hover {{ background: alpha(@nexus_fg, 0.08); }}
 .launcher .search-row {{ padding: 20px 22px 16px; color: @nexus_accent_fg; }}
 .nexus .launcher entry, .nexus .launcher entry:focus-within {{ background: transparent; border: none; box-shadow: none; padding: 4px; font-size: 18px; color: @nexus_fg; }}
 .launcher .keycap {{ font-size: 10px; color: @nexus_muted; border: none; border-radius: 5px; padding: 4px 6px; }}

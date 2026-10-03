@@ -113,6 +113,22 @@ impl ControlCenter {
         root.append(&handle);
         let content = vbox(0);
         content.set_hexpand(true);
+        let window_actions = hbox(0);
+        window_actions.set_halign(gtk::Align::End);
+        window_actions.set_margin_top(8);
+        window_actions.set_margin_end(8);
+        let close = gtk::Button::from_icon_name("window-close-symbolic");
+        close.add_css_class("control-close");
+        close.set_tooltip_text(Some("Close"));
+        close.update_property(&[gtk::accessible::Property::Label("Close")]);
+        let weak_window = window.downgrade();
+        close.connect_clicked(move |_| {
+            if let Some(window) = weak_window.upgrade() {
+                window.close();
+            }
+        });
+        window_actions.append(&close);
+        content.append(&window_actions);
         content.append(&stack);
         let status = label("", "status");
         status.add_css_class("error");

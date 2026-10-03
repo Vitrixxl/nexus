@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock\nnexus status\nnexus init-theme"
+            "Nexus — desktop control center\n\nnexus [launcher|tray|battery|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock\nnexus status\nnexus init-theme"
         );
         return Ok(());
     }
@@ -66,6 +66,8 @@ fn main() -> anyhow::Result<()> {
             "launcher",
             "control",
             "notifications",
+            "tray",
+            "battery",
             "screenshot",
             "shell",
             "close",
@@ -908,6 +910,15 @@ fn build(
     let initial_revision = catalogue.revision;
     let launcher = ui::launcher::Launcher::new(catalogue, Rc::new(move || shell2.hide()));
     shell.content.add_named(&launcher.widget, Some("launcher"));
+    let tray_shell = shell.clone();
+    let tray = ui::tray::Tray::new(Rc::new(move || tray_shell.hide()));
+    shell.content.add_named(&tray.widget, Some("tray"));
+    let battery = ui::battery::Battery::new();
+    shell.content.add_named(&battery.widget, Some("battery"));
+    let battery_lifetime = battery.clone();
+    shell.window.connect_destroy(move |_| {
+        let _ = &battery_lifetime;
+    });
     let center = ui::notifications::Center::new(server.clone());
     shell
         .content
@@ -918,7 +929,7 @@ fn build(
     let search = launcher.search.clone();
     let (center2, popups2) = (center.clone(), popups.clone());
     let open: ui::shell::Open = Rc::new(move |page, monitor| {
-        if !["launcher", "power", "notifications"].contains(&page) {
+        if !["launcher", "power", "notifications", "tray", "battery"].contains(&page) {
             if shell2.window.is_visible() {
                 shell2.hide();
             }
@@ -949,7 +960,20 @@ fn build(
     });
     let open2 = open.clone();
     control.power.connect_clicked(move |_| open2("power", None));
-    let bars = ui::shell::Bars::new(app, open.clone());
+    let bars = ui::shell::Bars::new(app, open.clone(), shell.clone());
+    let tray_bars = bars.clone();
+    let tray_shell = shell.clone();
+    tray.start(move |count| {
+        tray_bars.tray(count);
+        if count == 0 && tray_shell.is_open("tray") {
+            tray_shell.hide();
+        }
+    });
+    // Keep the host alive for the shell's lifetime.
+    let tray_lifetime = tray.clone();
+    shell.window.connect_destroy(move |_| {
+        let _ = &tray_lifetime;
+    });
     let sync_notices: Rc<dyn Fn()> = {
         let (bars, center, server, shell) =
             (bars.clone(), center.clone(), server.clone(), shell.clone());
@@ -1057,7 +1081,7 @@ fn build(
                     entry.grab_focus();
                 });
             } else if PAGES.iter().any(|p| p.0 == page)
-                || ["launcher", "control", "notifications"].contains(&page)
+                || ["launcher", "control", "notifications", "tray", "battery"].contains(&page)
             {
                 command_open(page, command_monitor.borrow().as_ref());
             }

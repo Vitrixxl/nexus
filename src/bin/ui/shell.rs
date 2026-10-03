@@ -16,6 +16,12 @@ pub struct Surface {
     pub page: RefCell<String>,
     /// The panel is folding up; the window hides once it is gone.
     closing: Cell<bool>,
+    anchors: RefCell<Vec<PanelAnchor>>,
+}
+struct PanelAnchor {
+    page: &'static str,
+    monitor: gtk::gdk::Monitor,
+    button: glib::WeakRef<gtk::Button>,
 }
 const FILLET: i32 = 14;
 /// The bar's fillets sweep further along the screen edge than down its sides.
@@ -153,6 +159,7 @@ impl Surface {
             corners,
             page: RefCell::new(String::new()),
             closing: Cell::new(false),
+            anchors: RefCell::default(),
         });
         let weak = Rc::downgrade(&this);
         this.revealer
@@ -227,6 +234,8 @@ impl Surface {
         *self.page.borrow_mut() = page.into();
         self.closing.set(false);
         let power = page == "power";
+        self.clip.set_halign(gtk::Align::Center);
+        self.clip.set_margin_start(0);
         for corner in &self.corners {
             corner.set_visible(!power);
         }
@@ -257,6 +266,15 @@ impl Surface {
             self.clip.set_margin_top(0);
         }
         self.content.set_visible_child_name(page);
+        let monitor = self.window.monitor();
+        if let Some((button, monitor)) = self.anchors.borrow().iter().find_map(|anchor| {
+            (anchor.page == page && monitor.as_ref().is_none_or(|m| m == &anchor.monitor))
+                .then(|| anchor.button.upgrade().map(|b| (b, anchor.monitor.clone())))
+                .flatten()
+        }) {
+            self.window.set_monitor(Some(&monitor));
+            self.align_below(&button, &monitor, page == "battery");
+        }
         self.window.set_keyboard_mode(KeyboardMode::OnDemand);
         self.window.present();
         let s = self.clone();
@@ -271,6 +289,35 @@ impl Surface {
             s.revealer.set_reveal_child(true);
         });
     }
+    fn anchor(&self, page: &'static str, monitor: &gtk::gdk::Monitor, button: &gtk::Button) {
+        let mut anchors = self.anchors.borrow_mut();
+        anchors.retain(|anchor| anchor.button.upgrade().is_some());
+        anchors.push(PanelAnchor {
+            page,
+            monitor: monitor.clone(),
+            button: button.downgrade(),
+        });
+    }
+    /// Anchor the panel to its button, excluding the transparent shadow gutters.
+    fn align_below(&self, button: &gtk::Button, monitor: &gtk::gdk::Monitor, right_aligned: bool) {
+        let Some(window) = button.root().and_downcast::<gtk::ApplicationWindow>() else {
+            return;
+        };
+        let Some(bounds) = button.compute_bounds(&window) else {
+            return;
+        };
+        let (_, width, _, _) = self.clip.measure(gtk::Orientation::Horizontal, -1);
+        let left = if right_aligned {
+            let right = window.margin(Edge::Left) + (bounds.x() + bounds.width()) as i32;
+            right - width + SHADOW + FILLET
+        } else {
+            let centre = window.margin(Edge::Left) + (bounds.x() + bounds.width() / 2.) as i32;
+            centre - width / 2
+        };
+        let left = left.clamp(0, (monitor.geometry().width() - width).max(0));
+        self.clip.set_halign(gtk::Align::Start);
+        self.clip.set_margin_start(left);
+    }
 }
 
 pub type Open = Rc<dyn Fn(&str, Option<&gtk::gdk::Monitor>)>;
@@ -283,6 +330,7 @@ struct Bar {
     monitor: gtk::gdk::Monitor,
     window: gtk::ApplicationWindow,
     notifications: Indicator,
+    tray: Indicator,
     wifi: Indicator,
     bluetooth: Indicator,
     sound: Indicator,
@@ -296,16 +344,20 @@ pub struct Bars {
     app: gtk::Application,
     bars: RefCell<Vec<Bar>>,
     open: Open,
+    surface: Rc<Surface>,
     /// Live notifications and do not disturb, for bars created later.
     notices: Cell<(usize, bool)>,
+    tray_count: Cell<usize>,
 }
 impl Bars {
-    pub fn new(app: &gtk::Application, open: Open) -> Rc<Self> {
+    pub fn new(app: &gtk::Application, open: Open, surface: Rc<Surface>) -> Rc<Self> {
         let this = Rc::new(Self {
             app: app.clone(),
             bars: RefCell::new(vec![]),
             open,
+            surface,
             notices: Cell::new((0, false)),
+            tray_count: Cell::new(0),
         });
         this.sync();
         let weak = Rc::downgrade(&this);
@@ -378,7 +430,18 @@ impl Bars {
         middle.append(&clock);
         middle.append(&label("Search", "bar-hint"));
         launcher.set_child(Some(&middle));
-        center.set_center_widget(Some(&launcher));
+        let middle_group = hbox(2);
+        middle_group.append(&launcher);
+        let tray = self.indicator(
+            monitor,
+            "application-x-executable-symbolic",
+            "Tray applications",
+            "tray",
+        );
+        tray.button.set_visible(self.tray_count.get() > 0);
+        self.surface.anchor("tray", monitor, &tray.button);
+        middle_group.append(&tray.button);
+        center.set_center_widget(Some(&middle_group));
         let right = hbox(0);
         let notifications = self.indicator(
             monitor,
@@ -395,7 +458,8 @@ impl Bars {
             "Brightness",
             "display",
         );
-        let battery = self.indicator(monitor, "battery-symbolic", "Battery", "");
+        let battery = self.indicator(monitor, "battery-symbolic", "Battery", "battery");
+        self.surface.anchor("battery", monitor, &battery.button);
         let power = self.indicator(
             monitor,
             "system-shutdown-symbolic",
@@ -403,9 +467,6 @@ impl Bars {
             "power",
         );
         power.button.add_css_class("bar-power");
-        // The battery only reports its level; it opens nothing.
-        battery.button.add_css_class("bar-static");
-        battery.button.set_focusable(false);
         for b in [
             &notifications,
             &wifi,
@@ -437,6 +498,7 @@ impl Bars {
             monitor: monitor.clone(),
             window,
             notifications,
+            tray,
             wifi,
             bluetooth,
             sound,
@@ -483,6 +545,15 @@ impl Bars {
             button,
             icon,
             value,
+        }
+    }
+    pub fn tray(&self, count: usize) {
+        self.tray_count.set(count);
+        for bar in self.bars.borrow().iter() {
+            bar.tray.button.set_visible(count > 0);
+            bar.tray
+                .button
+                .set_tooltip_text(Some(&format!("Tray applications · {count}")));
         }
     }
     pub fn update(&self, s: &Snapshot) {

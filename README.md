@@ -3,6 +3,7 @@
 A complete, quiet shell for Hyprland. The bar, application launcher, settings panels and power menu share one native Rust + GTK 4 interface, backed by a separate Rust daemon. No Waybar or external launcher is required.
 
 - **Bar** — workspaces, clock and stateful Wi-Fi, Bluetooth, sound, brightness, battery and power icons. One bar per monitor, with hotplug support.
+- **System tray** — when an application publishes a StatusNotifier/AppIndicator icon, a small applications button appears immediately to the right of Search. Click it to open a compact panel directly below that button, with application icons in one horizontal row and names shown on hover. Click an application to activate it; right-click for its own menu, including checkboxes and submenus. Icons and menus update while applications run, and the button disappears when the tray is empty. Applications without a tray icon are not listed; legacy XEmbed-only icons are not supported.
 - **Launcher** — click the center of the bar or press Super+Space. A search panel slides down from the bar; search desktop applications, move with ↑/↓ or Ctrl+N / Ctrl+P, open with Enter, dismiss with Escape or an outside click. Frequently used apps rise in the list.
 - **Notifications** — Nexus is the desktop's notification server (`org.freedesktop.Notifications`). Popups stack in the top-right corner from the very top of the screen, above the bar and fullscreen windows, with images, body markup, links, progress and action buttons; clicking one runs its default action, hovering holds it on screen. The bell in the bar counts live notifications and drops a list with Do not disturb (only critical notifications pop up) and Clear all.
 - **Wi-Fi** — NetworkManager networks, signal, radio, scanning, connect/disconnect and forget. Passwords are asked in a Nexus prompt (and through a NetworkManager secret agent when a saved one is rejected), handed to NetworkManager over D-Bus and kept out of command-line arguments, logs and Nexus settings. Enterprise networks use PEAP/MSCHAPv2.
@@ -38,6 +39,8 @@ nexus-session             # daemon + complete shell; works with runit/OpenRC/sys
 nexus shell               # persistent bar, with panels initially closed
 nexus launcher            # toggle the integrated application launcher
 nexus launcher firefox    # open with a search query
+nexus tray                # toggle the tray panel
+nexus battery             # battery estimate and power profiles
 nexus control             # control center on the last page shown
 nexus wifi
 nexus bluetooth
@@ -60,6 +63,12 @@ On systemd desktops you can instead enable the optional service with `systemctl 
 ## Lock screen
 
 `nexus lock` runs as its own process, so the lock holds whatever happens to the shell; if it ever dies, the compositor keeps the session locked. A second `nexus lock` while locked does nothing, so it can serve both a shortcut and hypridle (`lock_cmd = nexus lock`). The password is checked with the PAM service `/etc/pam.d/nexus` when it exists, otherwise `login` (the stack hyprlock uses); with `pam_faillock`, repeated failures lock the account for a while, as with any locker.
+
+## Battery and power profiles
+
+Click the battery in the bar to open a compact panel below it, aligned to the right edge of the battery button. The three buttons select Power saver, Balanced or Performance; the active profile is highlighted and unsupported modes are disabled. Changes made with `powerprofilesctl` appear while the panel is open. The estimate shows time until fully charged or remaining battery life, with explicit charging/full/unavailable states when no estimate is available.
+
+Install and run `power-profiles-daemon` for profile switching and `upower` for battery estimates. Nexus talks directly to their system D-Bus APIs, so the menu does not require `powerprofilesctl` or Python bindings. Profile changes use the service's normal polkit permissions; failures are shown in the panel.
 
 ## Power without sudo
 
@@ -112,9 +121,12 @@ cargo test --locked
 GDK_BACKEND=x11 xvfb-run -a cargo test --locked --bin nexus keyboard_navigation -- --ignored --test-threads=1
 dbus-run-session -- cargo test --locked --test agents -- --ignored
 dbus-run-session -- cargo test --locked --test notifications -- --ignored
+dbus-run-session -- cargo test --locked --test tray -- --ignored
+dbus-run-session -- cargo test --locked --test power -- --ignored
+GTK_A11Y=none GDK_BACKEND=x11 xvfb-run -a dbus-run-session -- cargo test --locked --bin nexus tray_menu -- --ignored --test-threads=1
 GDK_BACKEND=x11 xvfb-run -a cargo test --locked --bin nexus lock_view -- --ignored
 ```
 
-D-Bus tests exercise Wi-Fi secret exchange, stale prompt rejection, Bluetooth confirmation/rejection and display-only passkeys on a private bus, without connecting real devices. The notification test sends, replaces, closes and activates notifications over a private bus and checks the signals applications receive. Unit tests cover input validation, search ranking, desktop entry launching, workspace event selection and deterministic theme extraction. The lock view test drives typing, checking, refusal and unlocking offscreen without locking anything or calling PAM (set `NEXUS_LOCK_FRAMES` to a directory to save its frames). The isolated GTK test checks Ctrl+N/P, arrow navigation and Enter launching the selected application through a mock daemon.
+D-Bus tests exercise Wi-Fi secret exchange, stale prompt rejection, Bluetooth confirmation/rejection and display-only passkeys on a private bus, without connecting real devices. The tray test registers mock applications on a private bus, checks icon conversion, status changes, activation, menu actions, coexistence with another host and removal on exit. The notification test sends, replaces, closes and activates notifications over a private bus and checks the signals applications receive. Unit tests cover input validation, search ranking, desktop entry launching, workspace event selection and deterministic theme extraction. The lock view test drives typing, checking, refusal and unlocking offscreen without locking anything or calling PAM (set `NEXUS_LOCK_FRAMES` to a directory to save its frames). The isolated GTK test checks Ctrl+N/P, arrow navigation and Enter launching the selected application through a mock daemon.
 
 Primary API references: [NetworkManager D-Bus API](https://networkmanager.dev/docs/api/latest/spec.html), [BlueZ agent](https://github.com/bluez/bluez/blob/master/doc/org.bluez.Agent.rst), [GTK](https://docs.gtk.org/gtk4/), [login1](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html).

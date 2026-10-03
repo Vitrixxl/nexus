@@ -2,7 +2,9 @@ pub mod apps;
 pub mod backend;
 pub mod launcher;
 pub mod notifications;
+pub mod power;
 pub mod theme;
+pub mod tray;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
