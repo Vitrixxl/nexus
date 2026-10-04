@@ -283,6 +283,7 @@ impl BluetoothAgent {
 pub struct Backend {
     pub connection: Connection,
     pub prompts: Arc<Prompts>,
+    bluetooth_scanning: Arc<Mutex<bool>>,
 }
 fn string(p: &Props, k: &str) -> String {
     p.get(k)
@@ -384,6 +385,7 @@ impl Backend {
         Ok(Self {
             connection,
             prompts,
+            bluetooth_scanning: Arc::new(Mutex::new(false)),
         })
     }
     fn proxy<'a>(&'a self, dest: &'a str, path: &'a str, interface: &'a str) -> Result<Proxy<'a>> {
@@ -706,6 +708,9 @@ impl Backend {
             }
             "wifi-scan" => {
                 let radio = self.radio()?;
+                if !radio.enabled {
+                    return Ok(());
+                }
                 let scan = self
                     .proxy(NM, radio.device.as_str(), NM_WIRELESS)?
                     .call::<_, _, ()>("RequestScan", &(HashMap::<&str, Value>::new(),));
@@ -767,18 +772,34 @@ impl Backend {
                     .set_property("Powered", parse_bool(value)?)?;
             }
             "bluetooth-scan" => {
+                let mut scanning = self.bluetooth_scanning.lock().unwrap();
+                if *scanning {
+                    return Ok(());
+                }
                 let adapter = self.adapter()?;
                 let p = self.proxy("org.bluez", &adapter, "org.bluez.Adapter1")?;
-                p.call::<_, _, ()>("StartDiscovery", &())?;
+                if !p.get_property::<bool>("Powered")? {
+                    return Ok(());
+                }
+                match p.call::<_, _, ()>("StartDiscovery", &()) {
+                    // Recover a lease whose earlier StopDiscovery failed.
+                    Err(zbus::Error::MethodError(name, ..)) if name.ends_with(".InProgress") => {}
+                    result => result?,
+                }
+                *scanning = true;
                 drop(p);
                 let connection = self.connection.clone();
+                let scanning = self.bluetooth_scanning.clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_secs(20));
+                    // Finish before the next 15-second scan, including manual
+                    // refreshes, and release only our own BlueZ discovery lease.
+                    std::thread::sleep(Duration::from_secs(10));
                     if let Ok(p) =
                         Proxy::new(&connection, "org.bluez", adapter, "org.bluez.Adapter1")
                     {
                         let _: zbus::Result<()> = p.call("StopDiscovery", &());
                     }
+                    *scanning.lock().unwrap() = false;
                 });
             }
             "bluetooth-pair"

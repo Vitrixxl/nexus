@@ -4,6 +4,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
     rc::Rc,
+    time::Duration,
 };
 pub const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 pub const PATH: &str = "/StatusNotifierWatcher";
@@ -84,6 +85,7 @@ pub struct Host {
     registered: RefCell<BTreeMap<String, String>>,
     items: RefCell<BTreeMap<String, Item>>,
     generations: RefCell<BTreeMap<String, u64>>,
+    pending: RefCell<BTreeMap<String, u64>>,
     serial: Cell<u64>,
     owner: Cell<Option<gio::OwnerId>>,
     registration: RefCell<Option<gio::RegistrationId>>,
@@ -104,6 +106,7 @@ impl Host {
             registered: RefCell::default(),
             items: RefCell::default(),
             generations: RefCell::default(),
+            pending: RefCell::default(),
             serial: Cell::new(0),
             owner: Cell::new(None),
             registration: RefCell::default(),
@@ -312,6 +315,24 @@ impl Host {
         );
         this.owner.set(Some(id));
         this.discover();
+        // Some applications change properties without emitting SNI signals.
+        // Poll even passive items so they can become visible again. Slow items
+        // must finish their current read before a timer queues another one.
+        let weak = Rc::downgrade(&this);
+        glib::spawn_future_local(async move {
+            loop {
+                glib::timeout_future(Duration::from_secs(1)).await;
+                let Some(host) = weak.upgrade() else {
+                    break;
+                };
+                let addresses: Vec<_> = host.generations.borrow().keys().cloned().collect();
+                for address in addresses {
+                    if !host.pending.borrow().contains_key(&address) {
+                        host.refresh(&address);
+                    }
+                }
+            }
+        });
         Ok(this)
     }
     fn emit(&self, signal: &str, address: &str) {
@@ -324,6 +345,7 @@ impl Host {
     }
     fn remove(&self, address: &str) {
         self.generations.borrow_mut().remove(address);
+        self.pending.borrow_mut().remove(address);
         self.items.borrow_mut().remove(address);
         self.notify();
     }
@@ -367,6 +389,7 @@ impl Host {
         self.generations
             .borrow_mut()
             .insert(address.into(), generation);
+        self.pending.borrow_mut().insert(address.into(), generation);
         let (host, address) = (self.clone(), address.to_owned());
         glib::spawn_future_local(async move {
             let result = call(
@@ -377,6 +400,9 @@ impl Host {
                 (ITEM,).to_variant(),
             )
             .await;
+            if host.pending.borrow().get(&address) == Some(&generation) {
+                host.pending.borrow_mut().remove(&address);
+            }
             if host.generations.borrow().get(&address) != Some(&generation) {
                 return;
             }

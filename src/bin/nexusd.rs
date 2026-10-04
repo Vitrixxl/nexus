@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 fn main() -> anyhow::Result<()> {
     let (listener, _lock) = match listener("daemon") {
@@ -101,6 +101,20 @@ fn main() -> anyhow::Result<()> {
                     _ => poll_audio(&state),
                 }
                 thread::sleep(Duration::from_secs(2));
+            }
+        });
+    }
+    // Discovery is independent of cached status and user mutations. Each scan
+    // rechecks the radio state, and a slow service cannot delay the other radio.
+    for op in ["wifi-scan", "bluetooth-scan"] {
+        let backend = backend.clone();
+        thread::spawn(move || {
+            loop {
+                let started = Instant::now();
+                if let Err(e) = backend.action(op, "", "") {
+                    eprintln!("Automatic {op}: {e}");
+                }
+                thread::sleep(Duration::from_secs(15).saturating_sub(started.elapsed()));
             }
         });
     }

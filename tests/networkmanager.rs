@@ -438,4 +438,6 @@ fn wifi_through_networkmanager() {
     backend.action("wifi-power", "", "false").unwrap();
     assert!(!w.lock().unwrap().wireless_enabled);
     assert!(!backend.wifi().unwrap().0);
+    backend.action("wifi-scan", "", "").unwrap();
+    assert_eq!(w.lock().unwrap().scans, 1, "a disabled radio must not scan");
 }

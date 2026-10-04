@@ -247,6 +247,12 @@ fn status_notifier_and_menu_roundtrip() {
                 .unwrap();
                 until(|| seen.borrow().len() == 1).await;
                 assert!(seen.borrow()[0].attention);
+                // Polling recovers changes from clients that omit SNI signals,
+                // including an item becoming active again after being hidden.
+                *status.borrow_mut() = "Passive".into();
+                until(|| seen.borrow().is_empty()).await;
+                *status.borrow_mut() = "Active".into();
+                until(|| seen.borrow().len() == 1 && !seen.borrow()[0].attention).await;
                 // A second host reads the already registered item through the existing watcher.
                 let second_seen = Rc::new(RefCell::new(vec![]));
                 let received = second_seen.clone();
