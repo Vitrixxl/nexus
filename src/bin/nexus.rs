@@ -6,6 +6,7 @@ use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
 use nexus_control::*;
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     io::Write,
     rc::Rc,
     sync::mpsc,
@@ -207,6 +208,23 @@ fn state_label(state: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+fn busy_text(op: &str) -> &'static str {
+    match op {
+        "wifi-disconnect" | "bluetooth-disconnect" => "Disconnecting…",
+        "bluetooth-pair" => "Pairing…",
+        _ => "Connecting…",
+    }
+}
+/// Replaces the button's label with `text` and a spinner, and disables it.
+fn set_busy(b: &gtk::Button, text: &str) {
+    let content = hbox(6);
+    let spinner = gtk::Spinner::new();
+    spinner.start();
+    content.append(&spinner);
+    content.append(&gtk::Label::new(Some(text)));
+    b.set_child(Some(&content));
+    b.set_sensitive(false);
+}
 /// Error labels take no space until there is something to report.
 fn error_label() -> gtk::Label {
     let l = label("", "error");
@@ -224,11 +242,16 @@ struct Ui {
     tx: mpsc::Sender<Event>,
     settings: Rc<RefCell<theme::Settings>>,
     updating: Rc<Cell<bool>>,
+    /// Connection operations awaiting the daemon, by network or device, with
+    /// the text their button shows meanwhile.
+    pending: Rc<RefCell<HashMap<String, &'static str>>>,
 }
 enum Event {
     State(Box<Snapshot>),
     Catalogue(Box<launcher::Catalogue>),
     Done(Result<(), String>),
+    /// The daemon answered a connection operation on this network or device.
+    Settled(String),
 }
 fn perform(req: &Request) -> Result<(), String> {
     request(req).map_err(|e| e.to_string()).and_then(|r| {
@@ -241,9 +264,16 @@ fn perform(req: &Request) -> Result<(), String> {
 }
 impl Ui {
     fn send(&self, req: Request) {
+        self.run(req, None);
+    }
+    /// Performs `req`, then reports `settled` and the new state.
+    fn run(&self, req: Request, settled: Option<String>) {
         let tx = self.tx.clone();
         thread::spawn(move || {
             let _ = tx.send(Event::Done(perform(&req)));
+            if let Some(target) = settled {
+                let _ = tx.send(Event::Settled(target));
+            }
             if let Ok(reply) = request(&Request::Status)
                 && let Some(state) = reply.state
             {
@@ -254,6 +284,18 @@ impl Ui {
     fn bind(&self, b: &gtk::Button, req: Request) {
         let ui = self.clone();
         b.connect_clicked(move |_| ui.send(req.clone()));
+    }
+    /// Binds a connection operation on `target`, which `b` shows as in
+    /// progress until the daemon answers.
+    fn bind_busy(&self, b: &gtk::Button, op: &str, target: &str) {
+        let ui = self.clone();
+        let (op, target) = (op.to_string(), target.to_string());
+        b.connect_clicked(move |b| {
+            let text = busy_text(&op);
+            ui.pending.borrow_mut().insert(target.clone(), text);
+            set_busy(b, text);
+            ui.run(action(&op, &target, ""), Some(target.clone()));
+        });
     }
     fn save_theme(&self) {
         self.send(Request::Theme {
@@ -470,18 +512,29 @@ fn network_row(ui: &Ui, window: &gtk::ApplicationWindow, net: &Network) -> gtk::
         row.append(&b);
     }
     let b = button(if connected { "Disconnect" } else { "Connect" });
-    ui.bind(
-        &b,
-        action(
+    // NetworkManager keeps working on the network once Nexus started it.
+    let busy = ui
+        .pending
+        .borrow()
+        .get(&net.id)
+        .copied()
+        .or(match net.state.as_str() {
+            "connecting" => Some("Connecting…"),
+            "disconnecting" => Some("Disconnecting…"),
+            _ => None,
+        });
+    match busy {
+        Some(text) => set_busy(&b, text),
+        None => ui.bind_busy(
+            &b,
             if connected {
                 "wifi-disconnect"
             } else {
                 "wifi-connect"
             },
             &net.id,
-            "",
         ),
-    );
+    }
     row.append(&b);
     row
 }
@@ -491,7 +544,10 @@ fn device_row(ui: &Ui, window: &gtk::ApplicationWindow, device: &Device) -> gtk:
     if device.connected {
         row.add_css_class("active");
     }
-    let status = if device.connected {
+    let busy = ui.pending.borrow().get(&device.path).copied();
+    let status = if let Some(text) = busy {
+        text
+    } else if device.connected {
         "Connected"
     } else if device.paired {
         "Paired"
@@ -524,7 +580,10 @@ fn device_row(ui: &Ui, window: &gtk::ApplicationWindow, device: &Device) -> gtk:
         ("Pair", "bluetooth-pair")
     };
     let b = button(text);
-    ui.bind(&b, action(op, &device.path, ""));
+    match busy {
+        Some(text) => set_busy(&b, text),
+        None => ui.bind_busy(&b, op, &device.path),
+    }
     row.append(&b);
     row
 }
@@ -562,6 +621,7 @@ fn build(
         tx: tx.clone(),
         settings: settings.clone(),
         updating: Rc::new(Cell::new(false)),
+        pending: Rc::default(),
     };
 
     let wifi = page_box();
@@ -1138,6 +1198,12 @@ fn build(
                         }
                     }
                     control.report(result);
+                }
+                Event::Settled(target) => {
+                    ui.pending.borrow_mut().remove(&target);
+                    // Rebuild the rows with the state that follows.
+                    last_networks.clear();
+                    last_devices.clear();
                 }
                 Event::Catalogue(catalogue) => launcher.update(*catalogue),
                 Event::State(state) => {

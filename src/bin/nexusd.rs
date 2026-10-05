@@ -65,43 +65,13 @@ fn main() -> anyhow::Result<()> {
             loop {
                 match subsystem {
                     0 => {
-                        let result = b.wifi();
-                        if result.is_ok() && !reachable {
+                        let ok = poll_wifi(&b, &state);
+                        if ok && !reachable {
                             b.register_agents();
                         }
-                        reachable = result.is_ok();
-                        let mut s = state.lock().unwrap();
-                        match result {
-                            Ok((on, nets, scanning)) => {
-                                s.wifi = on;
-                                s.networks = nets;
-                                s.wifi_scanning = scanning;
-                                s.wifi_error = None;
-                            }
-                            Err(e) => {
-                                s.wifi_error = Some(e.to_string());
-                                s.networks.clear();
-                                s.wifi_scanning = false;
-                            }
-                        }
+                        reachable = ok;
                     }
-                    1 => {
-                        let result = b.bluetooth();
-                        let mut s = state.lock().unwrap();
-                        match result {
-                            Ok((on, devices, scanning)) => {
-                                s.bluetooth = on;
-                                s.devices = devices;
-                                s.bluetooth_scanning = scanning;
-                                s.bluetooth_error = None;
-                            }
-                            Err(e) => {
-                                s.bluetooth_error = Some(e.to_string());
-                                s.devices.clear();
-                                s.bluetooth_scanning = false;
-                            }
-                        }
-                    }
+                    1 => poll_bluetooth(&b, &state),
                     _ => poll_audio(&state),
                 }
                 thread::sleep(Duration::from_secs(2));
@@ -217,6 +187,14 @@ fn main() -> anyhow::Result<()> {
                             {
                                 poll_audio(&state);
                             }
+                            // So that a connection in progress shows at once,
+                            // rather than the button flipping back meanwhile.
+                            if result.is_ok() && op.starts_with("wifi-") {
+                                poll_wifi(&b, &state);
+                            }
+                            if result.is_ok() && op.starts_with("bluetooth-") {
+                                poll_bluetooth(&b, &state);
+                            }
                             Reply::result(result)
                         }
                         Err(_) => Reply::result(Err(anyhow::anyhow!(
@@ -244,6 +222,43 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Reads the Wi-Fi state into the snapshot; false when NetworkManager is unreachable.
+fn poll_wifi(b: &Backend, state: &Mutex<Snapshot>) -> bool {
+    let result = b.wifi();
+    let ok = result.is_ok();
+    let mut s = state.lock().unwrap();
+    match result {
+        Ok((on, nets, scanning)) => {
+            s.wifi = on;
+            s.networks = nets;
+            s.wifi_scanning = scanning;
+            s.wifi_error = None;
+        }
+        Err(e) => {
+            s.wifi_error = Some(e.to_string());
+            s.networks.clear();
+            s.wifi_scanning = false;
+        }
+    }
+    ok
+}
+fn poll_bluetooth(b: &Backend, state: &Mutex<Snapshot>) {
+    let result = b.bluetooth();
+    let mut s = state.lock().unwrap();
+    match result {
+        Ok((on, devices, scanning)) => {
+            s.bluetooth = on;
+            s.devices = devices;
+            s.bluetooth_scanning = scanning;
+            s.bluetooth_error = None;
+        }
+        Err(e) => {
+            s.bluetooth_error = Some(e.to_string());
+            s.devices.clear();
+            s.bluetooth_scanning = false;
+        }
+    }
+}
 fn poll_audio(state: &Mutex<Snapshot>) {
     let volume = backend::volume(false);
     let mic = backend::volume(true);
