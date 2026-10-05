@@ -92,6 +92,7 @@ fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>
     );
     app.set_wrap(false);
     app.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    app.set_max_width_chars(24);
     head.append(&app);
     let time = caption(&age(n.time));
     time.set_wrap(false);
@@ -120,6 +121,8 @@ fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>
         let summary = label(&n.summary, "summary");
         summary.set_lines(2);
         summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        summary.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        summary.set_max_width_chars(1);
         text.append(&summary);
     }
     if !n.body.is_empty() {
@@ -128,6 +131,10 @@ fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>
         body.set_lines(lines);
         body.set_ellipsize(gtk::pango::EllipsizeMode::End);
         body.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        // A wrapping label asks for its whole text on one line: without this
+        // cap, a long message stretches the card across the screen. The text
+        // then fills the width its container gives it.
+        body.set_max_width_chars(1);
         text.append(&body);
     }
     main.append(&text);
