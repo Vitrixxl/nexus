@@ -79,9 +79,13 @@ pub struct Snapshot {
     pub wifi: bool,
     pub networks: Vec<Network>,
     pub wifi_error: Option<String>,
+    #[serde(default)]
+    pub wifi_scanning: bool,
     pub bluetooth: bool,
     pub devices: Vec<Device>,
     pub bluetooth_error: Option<String>,
+    #[serde(default)]
+    pub bluetooth_scanning: bool,
     pub volume: Option<u8>,
     pub muted: bool,
     pub microphone: Option<u8>,

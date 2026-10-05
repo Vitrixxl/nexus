@@ -286,16 +286,37 @@ fn heading(title: &str, subtitle: &str) -> gtk::Box {
     b
 }
 /// Page title with its controls floating at the right.
-fn radio_heading(title: &str, scan: &gtk::Button, toggle: &gtk::Switch) -> gtk::Box {
+fn radio_heading(
+    title: &str,
+    scanning: &gtk::Box,
+    scan: &gtk::Button,
+    toggle: &gtk::Switch,
+) -> gtk::Box {
     let row = hbox(12);
     let text = label(title, "title");
     text.set_hexpand(true);
     text.set_valign(gtk::Align::Center);
     row.append(&text);
+    row.append(scanning);
     scan.set_valign(gtk::Align::Center);
     row.append(scan);
     row.append(toggle);
     row
+}
+/// Spinner shown in a radio page heading while the radio looks for devices.
+fn scan_indicator() -> gtk::Box {
+    let b = hbox(6);
+    b.set_valign(gtk::Align::Center);
+    b.append(&gtk::Spinner::new());
+    b.append(&caption("Scanning…"));
+    b.set_visible(false);
+    b
+}
+fn set_scanning(indicator: &gtk::Box, scanning: bool) {
+    indicator.set_visible(scanning);
+    if let Some(spinner) = indicator.first_child().and_downcast::<gtk::Spinner>() {
+        spinner.set_spinning(scanning);
+    }
 }
 /// Card with an icon, a title and a one-line status, followed by trailing widgets.
 fn row_card(icon: &str, title: &str) -> (gtk::Box, gtk::Label) {
@@ -547,7 +568,8 @@ fn build(
     let wifi_scan = button("Scan");
     ui.bind(&wifi_scan, action("wifi-scan", "", ""));
     let wifi_toggle = toggle(&ui, "wifi-power");
-    let wifi_header = radio_heading("Wi-Fi", &wifi_scan, &wifi_toggle);
+    let wifi_scanning = scan_indicator();
+    let wifi_header = radio_heading("Wi-Fi", &wifi_scanning, &wifi_scan, &wifi_toggle);
     wifi.append(&wifi_header);
     let wifi_error = error_label();
     wifi.append(&wifi_error);
@@ -559,7 +581,8 @@ fn build(
     let bt_scan = button("Scan");
     ui.bind(&bt_scan, action("bluetooth-scan", "", ""));
     let bt_toggle = toggle(&ui, "bluetooth-power");
-    let bt_header = radio_heading("Bluetooth", &bt_scan, &bt_toggle);
+    let bt_scanning = scan_indicator();
+    let bt_header = radio_heading("Bluetooth", &bt_scanning, &bt_scan, &bt_toggle);
     bt.append(&bt_header);
     let bt_error = error_label();
     bt.append(&bt_error);
@@ -1122,9 +1145,11 @@ fn build(
                     bars.update(&s);
                     ui.updating.set(true);
                     wifi_toggle.set_active(s.wifi);
-                    wifi_scan.set_sensitive(s.wifi);
+                    wifi_scan.set_sensitive(s.wifi && !s.wifi_scanning);
+                    set_scanning(&wifi_scanning, s.wifi_scanning);
                     bt_toggle.set_active(s.bluetooth);
-                    bt_scan.set_sensitive(s.bluetooth);
+                    bt_scan.set_sensitive(s.bluetooth && !s.bluetooth_scanning);
+                    set_scanning(&bt_scanning, s.bluetooth_scanning);
                     set_error(&wifi_error, s.wifi_error.as_deref());
                     set_error(&bt_error, s.bluetooth_error.as_deref());
                     set_error(&audio_error, s.audio_error.as_deref());

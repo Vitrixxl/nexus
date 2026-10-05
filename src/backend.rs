@@ -7,6 +7,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::Instant,
 };
 use zbus::{
     blocking::{Connection, Proxy},
@@ -284,7 +285,12 @@ pub struct Backend {
     pub connection: Connection,
     pub prompts: Arc<Prompts>,
     bluetooth_scanning: Arc<Mutex<bool>>,
+    /// When Nexus last requested a Wi-Fi scan, and the device's `LastScan` then.
+    wifi_scan: Mutex<Option<(Instant, i64)>>,
 }
+/// NetworkManager does not say whether it is scanning: a requested scan runs
+/// until `LastScan` changes, or for at most this long.
+const WIFI_SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 fn string(p: &Props, k: &str) -> String {
     p.get(k)
         .and_then(|v| <&str>::try_from(v).ok())
@@ -336,6 +342,10 @@ fn device_state(state: u32) -> &'static str {
 struct Radio {
     enabled: bool,
     networks: Vec<Network>,
+    /// Whether a scan Nexus requested is still running.
+    scanning: bool,
+    /// `LastScan` of the device, in CLOCK_BOOTTIME milliseconds.
+    last_scan: i64,
     device: OwnedObjectPath,
     /// Strongest access point of each network.
     access_points: HashMap<String, OwnedObjectPath>,
@@ -386,6 +396,7 @@ impl Backend {
             connection,
             prompts,
             bluetooth_scanning: Arc::new(Mutex::new(false)),
+            wifi_scan: Mutex::new(None),
         })
     }
     fn proxy<'a>(&'a self, dest: &'a str, path: &'a str, interface: &'a str) -> Result<Proxy<'a>> {
@@ -410,9 +421,10 @@ impl Backend {
             );
         }
     }
-    pub fn wifi(&self) -> Result<(bool, Vec<Network>)> {
+    /// Whether Wi-Fi is on, its networks, and whether it is scanning.
+    pub fn wifi(&self) -> Result<(bool, Vec<Network>, bool)> {
         let radio = self.radio()?;
-        Ok((radio.enabled, radio.networks))
+        Ok((radio.enabled, radio.networks, radio.scanning))
     }
     /// Saved Wi-Fi profiles with their SSID, most recently used first.
     fn saved_wifi(&self) -> Result<Vec<(OwnedObjectPath, Vec<u8>)>> {
@@ -491,6 +503,18 @@ impl Backend {
             })
             .map(|ssid| ssid_id(&ssid));
         let state = device_state(number(device, "State"));
+        let last_scan = owned::<i64>(wireless, "LastScan").unwrap_or(-1);
+        let scanning = {
+            let mut pending = self.wifi_scan.lock().unwrap();
+            if pending
+                .is_some_and(|(at, before)| before == last_scan && at.elapsed() < WIFI_SCAN_TIMEOUT)
+            {
+                true
+            } else {
+                *pending = None;
+                false
+            }
+        };
         let mut networks: HashMap<String, (Network, OwnedObjectPath)> = HashMap::new();
         for path in owned::<Vec<OwnedObjectPath>>(wireless, "AccessPoints").unwrap_or_default() {
             let Some(props) = ap(&path) else { continue };
@@ -537,6 +561,8 @@ impl Backend {
         Ok(Radio {
             enabled,
             networks: list,
+            scanning: enabled && scanning,
+            last_scan,
             device: device_path.clone(),
             access_points,
             saved,
@@ -677,17 +703,26 @@ impl Backend {
             .next()
             .context("No Bluetooth adapter found")
     }
-    pub fn bluetooth(&self) -> Result<(bool, Vec<Device>)> {
+    /// Whether Bluetooth is on, its devices, and whether it is discovering.
+    pub fn bluetooth(&self) -> Result<(bool, Vec<Device>, bool)> {
         let objects = self.objects()?;
         let adapter = self.adapter()?;
-        let enabled = objects
+        let adapter = objects
             .get(&OwnedObjectPath::try_from(adapter.as_str())?)
-            .and_then(|p| p.get("org.bluez.Adapter1"))
-            .is_some_and(|p| boolean(p, "Powered"));
+            .and_then(|p| p.get("org.bluez.Adapter1"));
+        let enabled = adapter.is_some_and(|p| boolean(p, "Powered"));
+        let discovering = enabled && adapter.is_some_and(|p| boolean(p, "Discovering"));
         let mut devices: Vec<_> = objects
             .into_iter()
             .filter_map(|(path, mut interfaces)| {
-                interfaces.remove("org.bluez.Device1").map(|p| Device {
+                let p = interfaces.remove("org.bluez.Device1")?;
+                // Without an advertised name, BlueZ shows the address: such
+                // nearby devices (phones, beacons, TVs…) only clutter the list.
+                let known = boolean(&p, "Paired") || boolean(&p, "Connected");
+                if !known && string(&p, "Name").is_empty() {
+                    return None;
+                }
+                Some(Device {
                     path: path.to_string(),
                     name: string(&p, "Alias"),
                     address: string(&p, "Address"),
@@ -698,7 +733,7 @@ impl Backend {
             })
             .collect();
         devices.sort_by_key(|d| (!d.connected, !d.paired, d.name.clone()));
-        Ok((enabled, devices))
+        Ok((enabled, devices, discovering))
     }
     pub fn action(&self, op: &str, target: &str, value: &str) -> Result<()> {
         match op {
@@ -717,7 +752,10 @@ impl Backend {
                 match scan {
                     // A scan is already running or has just finished.
                     Err(zbus::Error::MethodError(name, ..)) if name.ends_with(".NotAllowed") => {}
-                    result => result?,
+                    result => {
+                        result?;
+                        *self.wifi_scan.lock().unwrap() = Some((Instant::now(), radio.last_scan));
+                    }
                 }
             }
             "wifi-connect" | "wifi-disconnect" | "wifi-forget" => {

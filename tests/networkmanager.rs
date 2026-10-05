@@ -25,6 +25,7 @@ struct World {
     activated: Vec<(String, String, String)>,
     added: Vec<Settings>,
     scans: u32,
+    last_scan: i64,
     agents: Vec<String>,
     next: u32,
     ssids: HashMap<String, &'static str>,
@@ -167,6 +168,10 @@ impl Wireless {
     #[zbus(property)]
     fn active_access_point(&self) -> OwnedObjectPath {
         path("/")
+    }
+    #[zbus(property)]
+    fn last_scan(&self) -> i64 {
+        self.0.lock().unwrap().last_scan
     }
     fn request_scan(&self, _options: HashMap<String, OwnedValue>) {
         self.0.lock().unwrap().scans += 1;
@@ -325,7 +330,7 @@ fn wifi_through_networkmanager() {
     let nm = builder.build().unwrap();
     let backend = Arc::new(Backend::new().unwrap());
 
-    let (on, networks) = backend.wifi().unwrap();
+    let (on, networks, _) = backend.wifi().unwrap();
     assert!(on);
     let names: Vec<_> = networks.iter().map(|n| n.name.as_str()).collect();
     assert_eq!(names, ["Home", "Café", "Work"]);
@@ -433,8 +438,12 @@ fn wifi_through_networkmanager() {
     assert!(!backend.wifi().unwrap().1[0].saved);
     assert!(backend.action("wifi-connect", "00", "").is_err());
 
+    assert!(!backend.wifi().unwrap().2);
     backend.action("wifi-scan", "", "").unwrap();
     assert_eq!(w.lock().unwrap().scans, 1);
+    assert!(backend.wifi().unwrap().2, "scanning until LastScan changes");
+    w.lock().unwrap().last_scan = 1;
+    assert!(!backend.wifi().unwrap().2);
     backend.action("wifi-power", "", "false").unwrap();
     assert!(!w.lock().unwrap().wireless_enabled);
     assert!(!backend.wifi().unwrap().0);

@@ -72,14 +72,16 @@ fn main() -> anyhow::Result<()> {
                         reachable = result.is_ok();
                         let mut s = state.lock().unwrap();
                         match result {
-                            Ok((on, nets)) => {
+                            Ok((on, nets, scanning)) => {
                                 s.wifi = on;
                                 s.networks = nets;
+                                s.wifi_scanning = scanning;
                                 s.wifi_error = None;
                             }
                             Err(e) => {
                                 s.wifi_error = Some(e.to_string());
                                 s.networks.clear();
+                                s.wifi_scanning = false;
                             }
                         }
                     }
@@ -87,14 +89,16 @@ fn main() -> anyhow::Result<()> {
                         let result = b.bluetooth();
                         let mut s = state.lock().unwrap();
                         match result {
-                            Ok((on, devices)) => {
+                            Ok((on, devices, scanning)) => {
                                 s.bluetooth = on;
                                 s.devices = devices;
+                                s.bluetooth_scanning = scanning;
                                 s.bluetooth_error = None;
                             }
                             Err(e) => {
                                 s.bluetooth_error = Some(e.to_string());
                                 s.devices.clear();
+                                s.bluetooth_scanning = false;
                             }
                         }
                     }
