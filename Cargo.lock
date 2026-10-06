@@ -952,6 +952,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "async-io",
+ "bitflags",
  "fs2",
  "futures-lite",
  "gtk4",
@@ -961,8 +962,10 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "wayland-backend",
  "wayland-client",
  "wayland-protocols-wlr",
+ "wayland-scanner",
  "zbus",
 ]
 

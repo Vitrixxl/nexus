@@ -123,7 +123,15 @@ fn device_box(r: Rect, size: (f64, f64), pixels: (u32, u32)) -> (u32, u32, u32, 
     )
 }
 /// Windows shown on a monitor, relative to it, the topmost first.
-fn windows(monitor: &Value, clients: &Value) -> Vec<Rect> {
+/// Hyprland's handle for a window in its export protocol: the low 32 bits of
+/// its address.
+fn handle(client: &Value) -> Option<u32> {
+    let address = client["address"].as_str()?;
+    u64::from_str_radix(address.trim_start_matches("0x"), 16)
+        .ok()
+        .map(|a| a as u32)
+}
+fn windows(monitor: &Value, clients: &Value) -> Vec<(Rect, Option<u32>)> {
     let special = &monitor["specialWorkspace"];
     let workspace = if special["name"].as_str().is_some_and(|n| !n.is_empty()) {
         &special["id"]
@@ -152,12 +160,13 @@ fn windows(monitor: &Value, clients: &Value) -> Vec<Rect> {
     });
     list.iter()
         .map(|c| {
-            [
+            let rect = [
                 num(&c["at"][0]) - num(&monitor["x"]),
                 num(&c["at"][1]) - num(&monitor["y"]),
                 num(&c["size"][0]),
                 num(&c["size"][1]),
-            ]
+            ];
+            (rect, handle(c))
         })
         .collect()
 }
@@ -186,7 +195,9 @@ struct View {
     size: Cell<(f64, f64)>,
     /// The frozen screen, if the picker is not live.
     frame: RefCell<Option<Frame>>,
-    windows: RefCell<Vec<Rect>>,
+    windows: RefCell<Vec<(Rect, Option<u32>)>>,
+    /// Handle of the window under the pointer.
+    hovered: Cell<Option<u32>>,
     current: Cell<Rect>,
     target: Cell<Rect>,
     on_window: Cell<bool>,
@@ -240,6 +251,7 @@ impl View {
             current: Cell::new([0.; 4]),
             target: Cell::new([0.; 4]),
             on_window: Cell::new(false),
+            hovered: Cell::new(None),
             drag: Cell::new(None),
             dragging: Cell::new(false),
             pointer: Cell::new(None),
@@ -374,9 +386,10 @@ impl View {
             .borrow()
             .iter()
             .copied()
-            .find(|r| contains(*r, p));
+            .find(|(r, _)| contains(*r, p));
+        self.hovered.set(hit.and_then(|(_, handle)| handle));
         let (rect, on) = match hit {
-            Some(r) => (within(r, size), true),
+            Some((r, _)) => (within(r, size), true),
             None => ([0., 0., size.0, size.1], false),
         };
         if rect != self.target.get() || on != self.on_window.get() {
@@ -633,6 +646,16 @@ impl Screenshot {
                 .iter()
                 .find(|m| m["id"] == window["monitor"])
                 .context("The active window is on no monitor")?;
+            if let Some(handle) = handle(&window) {
+                match self.capturer.capture_window(handle).await {
+                    Ok(frame) => {
+                        self.end();
+                        self.publish_window(frame, options.save);
+                        return Ok(());
+                    }
+                    Err(e) => eprintln!("Window capture failed, cropping the screen: {e}"),
+                }
+            }
             let rect = [
                 num(&window["at"][0]) - num(&monitor["x"]),
                 num(&window["at"][1]) - num(&monitor["y"]),
@@ -757,6 +780,13 @@ impl Screenshot {
         self.stop_refresh();
         let frame = view.frame.borrow().clone();
         let size = view.size.get();
+        let window = view.hovered.get().filter(|_| view.on_window.get());
+        if let Some(handle) = window
+            && !options.record
+        {
+            self.finish_window(view, handle, rect, options.save);
+            return;
+        }
         if let Some(frame) = frame {
             // The image is already here: export it while the picker fades out.
             self.publish(frame, size, rect, options.save);
@@ -787,6 +817,54 @@ impl Screenshot {
             this.end();
             match result {
                 Ok(mut frames) => this.publish(frames.remove(0), size, rect, options.save),
+                Err(e) => this.fail(&e),
+            }
+        });
+    }
+    /// Captures the picked window alone, as it renders under whatever covers
+    /// it, or crops the screen if Hyprland cannot.
+    fn finish_window(self: &Rc<Self>, view: &View, handle: u32, rect: Rect, save: bool) {
+        let frozen = view.frame.borrow().clone();
+        let live = frozen.is_none();
+        if live {
+            // The screen may be needed after all, without the picker on it.
+            for v in self.active.borrow().iter() {
+                v.hide();
+            }
+            self.active.borrow_mut().clear();
+            if let Some(display) = gdk::Display::default() {
+                display.sync();
+            }
+        } else {
+            for v in self.active.borrow().iter() {
+                v.close();
+            }
+        }
+        let (size, name) = (view.size.get(), view.name.borrow().clone());
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let window = this.capturer.capture_window(handle).await;
+            // The window alone, else the screen to crop.
+            let shot = match window {
+                Ok(frame) => Ok((frame, None)),
+                Err(e) => {
+                    eprintln!("Window capture failed, cropping the screen: {e}");
+                    match frozen {
+                        Some(frame) => Ok((frame, Some(rect))),
+                        None => this
+                            .capturer
+                            .capture(vec![name])
+                            .await
+                            .map(|mut frames| (frames.remove(0), Some(rect))),
+                    }
+                }
+            };
+            if live {
+                this.end();
+            }
+            match shot {
+                Ok((window, None)) => this.publish_window(window, save),
+                Ok((screen, Some(rect))) => this.publish(screen, size, rect, save),
                 Err(e) => this.fail(&e),
             }
         });
@@ -902,6 +980,11 @@ impl Screenshot {
             }
         });
         true
+    }
+    /// Exports a whole window frame.
+    fn publish_window(self: &Rc<Self>, frame: Frame, save: bool) {
+        let size = (f64::from(frame.width), f64::from(frame.height));
+        self.publish(frame, size, [0., 0., size.0, size.1], save);
     }
     /// Crops, encodes and copies in a worker thread, then reports it.
     fn publish(self: &Rc<Self>, frame: Frame, size: (f64, f64), rect: Rect, save: bool) {
@@ -1079,8 +1162,17 @@ mod tests {
         ]);
         assert_eq!(
             windows(&monitor, &clients),
-            vec![[70., 20., 500., 300.], [20., 20., 500., 300.]]
+            vec![
+                ([70., 20., 500., 300.], None),
+                ([20., 20., 500., 300.], None)
+            ]
         );
+    }
+    #[test]
+    fn window_handles_are_the_low_address_bits() {
+        let client = serde_json::json!({"address": "0x55d1a2b3c4d0"});
+        assert_eq!(handle(&client), Some(0xa2b3_c4d0));
+        assert_eq!(handle(&serde_json::json!({})), None);
     }
     #[test]
     fn options() {

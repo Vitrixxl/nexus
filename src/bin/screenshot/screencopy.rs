@@ -1,6 +1,7 @@
-//! Output capture through wlr-screencopy, on a Wayland connection of its own that
-//! stays open in a worker thread: a capture costs one frame of the compositor
-//! instead of starting grim and going through a PNG file.
+//! Output capture through wlr-screencopy, and window capture through Hyprland's
+//! toplevel export, on a Wayland connection of its own that stays open in a
+//! worker thread: a capture costs one frame of the compositor instead of
+//! starting grim and going through a PNG file.
 use anyhow::{Context, Result, bail};
 use gtk::glib;
 use std::{
@@ -9,6 +10,10 @@ use std::{
     path::PathBuf,
     sync::mpsc,
     thread,
+};
+use toplevel_export::{
+    hyprland_toplevel_export_frame_v1::{self, HyprlandToplevelExportFrameV1},
+    hyprland_toplevel_export_manager_v1::HyprlandToplevelExportManagerV1,
 };
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, WEnum,
@@ -20,6 +25,19 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 };
 
+/// Hyprland's copy of one window as it renders it, whatever lies above it.
+#[allow(non_upper_case_globals, clippy::all)]
+mod toplevel_export {
+    use wayland_client;
+    use wayland_client::protocol::*;
+    pub mod __interfaces {
+        use wayland_client::protocol::__interfaces::*;
+        wayland_scanner::generate_interfaces!("protocols/hyprland-toplevel-export-v1.xml");
+    }
+    use self::__interfaces::*;
+    wayland_scanner::generate_client_code!("protocols/hyprland-toplevel-export-v1.xml");
+}
+
 /// The pixels of one output in B, G, R, A byte order, opaque, top row first.
 #[derive(Clone)]
 pub struct Frame {
@@ -28,17 +46,32 @@ pub struct Frame {
     pub stride: u32,
     pub data: glib::Bytes,
 }
+/// What to capture: an output by name, or a window by its Hyprland handle
+/// (the low 32 bits of its address).
+#[derive(Clone)]
+enum Target {
+    Output(String),
+    Window(u32),
+}
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Output(name) => f.write_str(name),
+            Self::Window(handle) => write!(f, "window {handle:#x}"),
+        }
+    }
+}
 type Reply = async_channel::Sender<Result<Vec<Frame>, String>>;
 pub struct Capturer {
-    jobs: mpsc::Sender<(Vec<String>, Reply)>,
+    jobs: mpsc::Sender<(Vec<Target>, Reply)>,
 }
 impl Capturer {
     /// Connects right away, so that the first capture does not wait for it.
     pub fn start() -> Self {
-        let (jobs, rx) = mpsc::channel::<(Vec<String>, Reply)>();
+        let (jobs, rx) = mpsc::channel::<(Vec<Target>, Reply)>();
         thread::spawn(move || {
             let mut session = Session::connect().ok();
-            for (outputs, reply) in rx {
+            for (targets, reply) in rx {
                 let mut result = Err(anyhow::anyhow!("No Wayland connection"));
                 // A connection that failed is replaced once before giving up.
                 for _ in 0..2 {
@@ -46,7 +79,7 @@ impl Capturer {
                         session = Session::connect().ok();
                     }
                     if let Some(s) = session.as_mut() {
-                        result = s.capture(&outputs);
+                        result = s.capture(&targets);
                         if result.is_ok() {
                             break;
                         }
@@ -60,9 +93,17 @@ impl Capturer {
     }
     /// Frames of the outputs named, in the same order.
     pub async fn capture(&self, outputs: Vec<String>) -> Result<Vec<Frame>, String> {
+        self.run(outputs.into_iter().map(Target::Output).collect())
+            .await
+    }
+    /// The window with this Hyprland handle, without what covers it.
+    pub async fn capture_window(&self, handle: u32) -> Result<Frame, String> {
+        Ok(self.run(vec![Target::Window(handle)]).await?.remove(0))
+    }
+    async fn run(&self, targets: Vec<Target>) -> Result<Vec<Frame>, String> {
         let (tx, rx) = async_channel::bounded(1);
         self.jobs
-            .send((outputs, tx))
+            .send((targets, tx))
             .map_err(|_| "The capture thread stopped".to_string())?;
         rx.recv()
             .await
@@ -84,6 +125,22 @@ struct Pending {
     ready: bool,
     failed: bool,
 }
+impl Pending {
+    /// Keeps the first shared-memory buffer offered in a format we read.
+    fn offer(&mut self, format: wl_shm::Format, width: u32, height: u32, stride: u32) {
+        if self.buffer.is_none()
+            && matches!(
+                format,
+                wl_shm::Format::Xrgb8888
+                    | wl_shm::Format::Argb8888
+                    | wl_shm::Format::Xbgr8888
+                    | wl_shm::Format::Abgr8888
+            )
+        {
+            self.buffer = Some((format, width, height, stride));
+        }
+    }
+}
 #[derive(Default)]
 struct State {
     outputs: Vec<Output>,
@@ -94,7 +151,29 @@ struct Session {
     state: State,
     shm: wl_shm::WlShm,
     manager: ZwlrScreencopyManagerV1,
+    /// Hyprland only.
+    export: Option<HyprlandToplevelExportManagerV1>,
     _globals: GlobalList,
+}
+/// A frame being copied, from either protocol.
+enum Copy {
+    Output(ZwlrScreencopyFrameV1),
+    Window(HyprlandToplevelExportFrameV1),
+}
+impl Copy {
+    fn copy(&self, buffer: &wl_buffer::WlBuffer) {
+        match self {
+            Self::Output(frame) => frame.copy(buffer),
+            // Now, rather than at the window's next damage.
+            Self::Window(frame) => frame.copy(buffer, 1),
+        }
+    }
+    fn destroy(&self) {
+        match self {
+            Self::Output(frame) => frame.destroy(),
+            Self::Window(frame) => frame.destroy(),
+        }
+    }
 }
 impl Session {
     fn connect() -> Result<Self> {
@@ -105,6 +184,7 @@ impl Session {
         let manager = globals
             .bind(&qh, 3..=3, ())
             .context("The compositor does not offer wlr-screencopy")?;
+        let export = globals.bind(&qh, 1..=1, ()).ok();
         let mut state = State::default();
         globals.contents().with_list(|list| {
             for g in list.iter().filter(|g| g.interface == "wl_output") {
@@ -118,34 +198,45 @@ impl Session {
             state,
             shm,
             manager,
+            export,
             _globals: globals,
         })
     }
-    fn capture(&mut self, names: &[String]) -> Result<Vec<Frame>> {
+    fn capture(&mut self, targets: &[Target]) -> Result<Vec<Frame>> {
         // Picks up outputs plugged in since the last capture.
         self.queue.roundtrip(&mut self.state)?;
         let qh = self.queue.handle();
-        self.state.pending = names.iter().map(|_| Pending::default()).collect();
+        self.state.pending = targets.iter().map(|_| Pending::default()).collect();
         let mut frames = Vec::new();
-        for (i, name) in names.iter().enumerate() {
-            let output = self
-                .state
-                .outputs
-                .iter()
-                .find(|o| o.name.as_deref() == Some(name))
-                .with_context(|| format!("No output named {name}"))?;
-            frames.push(self.manager.capture_output(0, &output.proxy, &qh, i));
+        for (i, target) in targets.iter().enumerate() {
+            frames.push(match target {
+                Target::Output(name) => {
+                    let output = self
+                        .state
+                        .outputs
+                        .iter()
+                        .find(|o| o.name.as_deref() == Some(name))
+                        .with_context(|| format!("No output named {name}"))?;
+                    Copy::Output(self.manager.capture_output(0, &output.proxy, &qh, i))
+                }
+                Target::Window(handle) => Copy::Window(
+                    self.export
+                        .as_ref()
+                        .context("The compositor cannot capture single windows")?
+                        .capture_toplevel(0, *handle, &qh, i),
+                ),
+            });
         }
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
         let mut buffers: Vec<Option<(fs::File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer)>> =
-            names.iter().map(|_| None).collect();
+            targets.iter().map(|_| None).collect();
         let result = (|| {
             loop {
                 for (i, p) in self.state.pending.iter().enumerate() {
                     if p.failed {
-                        bail!("The compositor could not capture {}", names[i]);
+                        bail!("The compositor could not capture {}", targets[i]);
                     }
                     if !p.described || buffers[i].is_some() {
                         continue;
@@ -282,6 +373,36 @@ impl Dispatch<wl_output::WlOutput, u32> for State {
         }
     }
 }
+impl Dispatch<HyprlandToplevelExportFrameV1, usize> for State {
+    fn event(
+        state: &mut Self,
+        _: &HyprlandToplevelExportFrameV1,
+        event: hyprland_toplevel_export_frame_v1::Event,
+        index: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(p) = state.pending.get_mut(*index) else {
+            return;
+        };
+        use hyprland_toplevel_export_frame_v1::Event;
+        match event {
+            Event::Buffer {
+                format: WEnum::Value(format),
+                width,
+                height,
+                stride,
+            } => p.offer(format, width, height, stride),
+            Event::BufferDone => p.described = true,
+            Event::Flags {
+                flags: WEnum::Value(flags),
+            } => p.y_invert = flags.contains(hyprland_toplevel_export_frame_v1::Flags::YInvert),
+            Event::Ready { .. } => p.ready = true,
+            Event::Failed => p.failed = true,
+            _ => {}
+        }
+    }
+}
 impl Dispatch<ZwlrScreencopyFrameV1, usize> for State {
     fn event(
         state: &mut Self,
@@ -301,17 +422,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, usize> for State {
                 width,
                 height,
                 stride,
-            } if p.buffer.is_none()
-                && matches!(
-                    format,
-                    wl_shm::Format::Xrgb8888
-                        | wl_shm::Format::Argb8888
-                        | wl_shm::Format::Xbgr8888
-                        | wl_shm::Format::Abgr8888
-                ) =>
-            {
-                p.buffer = Some((format, width, height, stride));
-            }
+            } => p.offer(format, width, height, stride),
             Event::BufferDone => p.described = true,
             Event::Flags {
                 flags: WEnum::Value(flags),
@@ -326,6 +437,7 @@ wayland_client::delegate_noop!(State: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(State: wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(State: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(State: ZwlrScreencopyManagerV1);
+wayland_client::delegate_noop!(State: HyprlandToplevelExportManagerV1);
 
 #[cfg(test)]
 mod tests {
