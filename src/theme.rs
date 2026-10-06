@@ -340,6 +340,8 @@ window.nexus.nexus-bar {{ background: transparent; }}
 .nexus-bar .bar-hint {{ color: @nexus_muted; font-size: 10px; }}
 .nexus-bar .bar-clock {{ font-size: 12px; }}
 .nexus-bar .bar-power {{ color: @nexus_accent_fg; padding: 0 12px; }}
+.nexus-bar button.bar-recording, .nexus-bar button.bar-recording label {{ color: @nexus_danger; }}
+.nexus-bar button.bar-recording {{ background: alpha(@nexus_error, 0.16); }}
 .nexus-bar .workspace {{ color: @nexus_muted; padding: 0; min-width: 26px; }}
 .nexus-bar .workspace.active {{ background: @nexus_surface; color: @nexus_accent_fg; }}
 .tray-panel {{ padding: 18px; }}

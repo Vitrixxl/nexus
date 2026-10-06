@@ -1,7 +1,8 @@
 //! Screenshots: a picker over every monitor, on a frozen or a live screen, and
 //! direct captures of the focused screen or the active window. The picker's
 //! windows stay realized between captures and outputs are copied in memory, so
-//! a shortcut shows the picker within a frame or two.
+//! a shortcut shows the picker within a frame or two. The same picker chooses
+//! what wf-recorder records.
 mod screencopy;
 use anyhow::{Context, Result, ensure};
 use gtk::{gdk, glib, prelude::*};
@@ -17,11 +18,11 @@ use std::{
     cell::{Cell, RefCell},
     io::{Read, Write},
     os::unix::net::UnixStream,
-    path::PathBuf,
-    process::{Command, Stdio},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     rc::{Rc, Weak},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// x, y, width, height in logical pixels of one monitor.
@@ -45,6 +46,8 @@ pub struct Options {
     pub live: bool,
     /// Keep a file in ~/Pictures/screenshots besides the clipboard copy.
     pub save: bool,
+    /// Record the picked area to ~/Videos/recordings, or stop the recording.
+    pub record: bool,
 }
 impl Options {
     pub fn parse(args: &str) -> Result<Self, String> {
@@ -52,6 +55,7 @@ impl Options {
             mode: Mode::Region,
             live: false,
             save: false,
+            record: false,
         };
         for arg in args.split_whitespace() {
             match arg {
@@ -60,6 +64,8 @@ impl Options {
                 "window" => o.mode = Mode::Window,
                 "--live" => o.live = true,
                 "--save" => o.save = true,
+                // Picked on the live screen, as that is what gets recorded.
+                "--record" => (o.record, o.live) = (true, true),
                 _ => return Err(format!("Unknown screenshot option: {arg}")),
             }
         }
@@ -175,6 +181,8 @@ struct View {
     layer: gtk::Fixed,
     selection: gtk::Box,
     name: RefCell<String>,
+    /// Position of the monitor in the layout, in logical pixels.
+    origin: Cell<(f64, f64)>,
     size: Cell<(f64, f64)>,
     /// The frozen screen, if the picker is not live.
     frame: RefCell<Option<Frame>>,
@@ -225,6 +233,7 @@ impl View {
             layer,
             selection,
             name: RefCell::default(),
+            origin: Cell::default(),
             size: Cell::new(logical_size(monitor)),
             frame: RefCell::default(),
             windows: RefCell::default(),
@@ -326,6 +335,7 @@ impl View {
     fn reset(self: &Rc<Self>, monitor: &Value, clients: &Value, cursor: &Value) {
         let size = logical_size(&self.monitor);
         self.size.set(size);
+        self.origin.set((num(&monitor["x"]), num(&monitor["y"])));
         *self.windows.borrow_mut() = windows(monitor, clients);
         self.drag.set(None);
         self.dragging.set(false);
@@ -486,8 +496,17 @@ impl View {
     }
 }
 
+/// A screen recording in progress.
+struct Recording {
+    recorder: Child,
+    path: PathBuf,
+}
+/// Reports when a recording starts, with its start time, and when it stops.
+pub type RecordingChanged = Box<dyn Fn(Option<Instant>)>;
 pub struct Screenshot {
     app: gtk::Application,
+    recording: RefCell<Option<Recording>>,
+    on_recording: RefCell<Option<RecordingChanged>>,
     server: Rc<Server>,
     capturer: Capturer,
     views: RefCell<Vec<Rc<View>>>,
@@ -512,6 +531,8 @@ impl Screenshot {
         }
         let this = Rc::new(Self {
             app: app.clone(),
+            recording: RefCell::default(),
+            on_recording: RefCell::default(),
             server,
             capturer: Capturer::start(),
             views: RefCell::default(),
@@ -567,8 +588,20 @@ impl Screenshot {
             ));
         }
     }
+    pub fn connect_recording(&self, changed: impl Fn(Option<Instant>) + 'static) {
+        *self.on_recording.borrow_mut() = Some(Box::new(changed));
+    }
+    fn recording_changed(&self, started: Option<Instant>) {
+        if let Some(changed) = self.on_recording.borrow().as_ref() {
+            changed(started);
+        }
+    }
     /// The shortcut again while picking cancels, as it closes the other panels.
+    /// While recording, a record request stops the recording.
     pub fn take(self: &Rc<Self>, options: Options) {
+        if options.record && self.stop_recording() {
+            return;
+        }
         if self.options.get().is_some() {
             if !self.active.borrow().is_empty() {
                 self.cancel();
@@ -581,6 +614,7 @@ impl Screenshot {
         glib::spawn_future_local(async move {
             let result = match options.mode {
                 Mode::Region => this.pick(options).await,
+                _ if options.record => this.pick(options).await,
                 _ => this.capture_now(options).await,
             };
             if let Err(e) = result {
@@ -739,6 +773,13 @@ impl Screenshot {
         if let Some(display) = gdk::Display::default() {
             display.sync();
         }
+        if options.record {
+            self.end();
+            if let Err(e) = self.start_recording(view, rect) {
+                self.recording_failed(&format!("{e:#}"));
+            }
+            return;
+        }
         let name = view.name.borrow().clone();
         let this = self.clone();
         glib::spawn_future_local(async move {
@@ -772,6 +813,95 @@ impl Screenshot {
         }
         self.options.set(None);
         self.finishing.set(false);
+    }
+    /// Records `rect` of the view's monitor, the whole monitor by name so that
+    /// wf-recorder follows it as is.
+    fn start_recording(self: &Rc<Self>, view: &View, rect: Rect) -> Result<()> {
+        let size = view.size.get();
+        let mut recorder = Command::new("wf-recorder");
+        if rect == [0., 0., size.0, size.1] {
+            recorder.args(["-o", view.name.borrow().as_str()]);
+        } else {
+            let (x, y) = view.origin.get();
+            // H.264 wants even dimensions.
+            let even = |v: f64| ((v.round() as i64) & !1).max(2);
+            recorder.args([
+                "-g",
+                &format!(
+                    "{},{} {}x{}",
+                    (x + rect[0]).round(),
+                    (y + rect[1]).round(),
+                    even(rect[2]),
+                    even(rect[3])
+                ),
+            ]);
+        }
+        let folder = glib::user_special_dir(glib::UserDirectory::Videos)
+            .unwrap_or_else(|| glib::home_dir().join("Videos"))
+            .join("recordings");
+        std::fs::create_dir_all(&folder)?;
+        let path = unique(&folder, "Recording", "mp4");
+        let child = recorder
+            .arg("-f")
+            .arg(&path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("wf-recorder is not installed")?;
+        *self.recording.borrow_mut() = Some(Recording {
+            recorder: child,
+            path,
+        });
+        self.recording_changed(Some(Instant::now()));
+        // wf-recorder fails at once when it cannot capture or encode.
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(600), move || {
+            let Some(this) = weak.upgrade() else { return };
+            let exited = this
+                .recording
+                .borrow_mut()
+                .as_mut()
+                .and_then(|r| r.recorder.try_wait().ok().flatten());
+            if let Some(status) = exited {
+                this.recording.borrow_mut().take();
+                this.recording_changed(None);
+                this.recording_failed(&format!("wf-recorder exited: {status}"));
+            }
+        });
+        Ok(())
+    }
+    /// Ends the recording in progress, if any, and reports the video once
+    /// wf-recorder has written it out.
+    fn stop_recording(self: &Rc<Self>) -> bool {
+        let Some(Recording { mut recorder, path }) = self.recording.borrow_mut().take() else {
+            return false;
+        };
+        self.recording_changed(None);
+        let (tx, rx) = async_channel::bounded(1);
+        thread::spawn(move || {
+            // SIGINT lets wf-recorder finish the file; SIGKILL would leave it unreadable.
+            let _ = Command::new("kill")
+                .args(["-INT", &recorder.id().to_string()])
+                .status();
+            let _ = recorder.wait();
+            let _ = tx.send_blocking(());
+        });
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let _ = rx.recv().await;
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                this.notify(
+                    "Recording saved",
+                    &format!("Saved as {}", glib::markup_escape_text(&name)),
+                    None,
+                );
+            } else {
+                this.recording_failed("The recording is empty");
+            }
+        });
+        true
     }
     /// Crops, encodes and copies in a worker thread, then reports it.
     fn publish(self: &Rc<Self>, frame: Frame, size: (f64, f64), rect: Rect, save: bool) {
@@ -811,6 +941,10 @@ impl Screenshot {
         eprintln!("Screenshot failed: {error}");
         self.notify("Screenshot failed", &glib::markup_escape_text(error), None);
     }
+    fn recording_failed(&self, error: &str) {
+        eprintln!("Recording failed: {error}");
+        self.notify("Recording failed", &glib::markup_escape_text(error), None);
+    }
     fn notify(&self, summary: &str, body: &str, image: Option<Image>) {
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -839,6 +973,21 @@ impl Screenshot {
     }
 }
 
+/// A new file in `folder` named after the current time.
+fn unique(folder: &Path, prefix: &str, extension: &str) -> PathBuf {
+    let stamp = glib::DateTime::now_local()
+        .and_then(|t| t.format("%Y-%m-%d_%H-%M-%S"))
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let mut path = folder.join(format!("{prefix}_{stamp}.{extension}"));
+    for n in 2.. {
+        if !path.exists() {
+            break;
+        }
+        path = folder.join(format!("{prefix}_{stamp}-{n}.{extension}"));
+    }
+    path
+}
 struct Exported {
     path: Option<PathBuf>,
     thumbnail: (u32, u32, Vec<u8>),
@@ -872,17 +1021,7 @@ fn export(frame: &Frame, (x, y, w, h): (u32, u32, u32, u32), save: bool) -> Resu
             .unwrap_or_else(|| glib::home_dir().join("Pictures"))
             .join("screenshots");
         std::fs::create_dir_all(&folder)?;
-        let stamp = glib::DateTime::now_local()
-            .and_then(|t| t.format("%Y-%m-%d_%H-%M-%S"))
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        let mut path = folder.join(format!("Screenshot_{stamp}.png"));
-        for n in 2.. {
-            if !path.exists() {
-                break;
-            }
-            path = folder.join(format!("Screenshot_{stamp}-{n}.png"));
-        }
+        let path = unique(&folder, "Screenshot", "png");
         std::fs::write(&path, &png)?;
         Some(path)
     } else {
@@ -946,7 +1085,12 @@ mod tests {
     #[test]
     fn options() {
         let o = Options::parse("--live --save").unwrap();
-        assert!(o.live && o.save && o.mode == Mode::Region);
+        assert!(o.live && o.save && !o.record && o.mode == Mode::Region);
+        let o = Options::parse("--record").unwrap();
+        assert!(
+            o.record && o.live,
+            "recordings are picked on the live screen"
+        );
         assert_eq!(Options::parse("window").unwrap().mode, Mode::Window);
         assert!(Options::parse("--bogus").is_err());
     }

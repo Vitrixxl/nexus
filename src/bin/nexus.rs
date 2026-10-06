@@ -1091,6 +1091,8 @@ fn build(
         });
     }
     let shot = screenshot::Screenshot::new(app, server.clone());
+    let record_bars = bars.clone();
+    shot.connect_recording(move |started| record_bars.set_recording(started));
     if initial == "screenshot" {
         if let Ok(options) = screenshot::Options::parse(initial_query) {
             shot.take(options);

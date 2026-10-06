@@ -5,6 +5,7 @@ use nexus_control::Snapshot;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 pub struct Surface {
@@ -331,6 +332,7 @@ struct Bar {
     window: gtk::ApplicationWindow,
     notifications: Indicator,
     tray: Indicator,
+    record: Indicator,
     wifi: Indicator,
     bluetooth: Indicator,
     sound: Indicator,
@@ -348,6 +350,8 @@ pub struct Bars {
     /// Live notifications and do not disturb, for bars created later.
     notices: Cell<(usize, bool)>,
     tray_count: Cell<usize>,
+    /// When the screen recording in progress started.
+    recording: Cell<Option<Instant>>,
 }
 impl Bars {
     pub fn new(app: &gtk::Application, open: Open, surface: Rc<Surface>) -> Rc<Self> {
@@ -358,6 +362,7 @@ impl Bars {
             surface,
             notices: Cell::new((0, false)),
             tray_count: Cell::new(0),
+            recording: Cell::new(None),
         });
         this.sync();
         let weak = Rc::downgrade(&this);
@@ -432,6 +437,22 @@ impl Bars {
         launcher.set_child(Some(&middle));
         let middle_group = hbox(2);
         middle_group.append(&launcher);
+        let capture = self.indicator(
+            monitor,
+            "camera-photo-symbolic",
+            "Screenshot · Super+Shift+S",
+            "",
+        );
+        capture
+            .button
+            .connect_clicked(|_| run_nexus(&["screenshot", "--save"]));
+        middle_group.append(&capture.button);
+        let record = self.indicator(monitor, "media-record-symbolic", "", "");
+        record
+            .button
+            .connect_clicked(|_| run_nexus(&["screenshot", "--record"]));
+        show_recording(&record, self.recording.get());
+        middle_group.append(&record.button);
         let tray = self.indicator(
             monitor,
             "application-x-executable-symbolic",
@@ -499,6 +520,7 @@ impl Bars {
             window,
             notifications,
             tray,
+            record,
             wifi,
             bluetooth,
             sound,
@@ -545,6 +567,29 @@ impl Bars {
             button,
             icon,
             value,
+        }
+    }
+    /// Shows a recording and its length on every bar while it runs.
+    pub fn set_recording(self: &Rc<Self>, started: Option<Instant>) {
+        self.recording.set(started);
+        for bar in self.bars.borrow().iter() {
+            show_recording(&bar.record, started);
+        }
+        if started.is_some() {
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local(Duration::from_secs(1), move || {
+                let Some(this) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                // A later recording runs its own timer.
+                if this.recording.get() != started {
+                    return glib::ControlFlow::Break;
+                }
+                for bar in this.bars.borrow().iter() {
+                    show_recording(&bar.record, started);
+                }
+                glib::ControlFlow::Continue
+            });
         }
     }
     pub fn tray(&self, count: usize) {
@@ -705,6 +750,37 @@ impl Bars {
             }
         }
     }
+}
+/// Runs `nexus` with `args`; the request reaches this process through its socket.
+fn run_nexus(args: &[&str]) {
+    let exe = std::env::current_exe().unwrap_or_else(|_| "nexus".into());
+    match std::process::Command::new(exe).args(args).spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+        }
+        Err(e) => eprintln!("Could not run nexus {}: {e}", args.join(" ")),
+    }
+}
+fn show_recording(indicator: &Indicator, started: Option<Instant>) {
+    let Some(started) = started else {
+        indicator.button.remove_css_class("bar-recording");
+        indicator.icon.set_icon_name(Some("media-record-symbolic"));
+        indicator.value.set_visible(false);
+        indicator
+            .button
+            .set_tooltip_text(Some("Record the screen · Super+Shift+R"));
+        return;
+    };
+    let seconds = started.elapsed().as_secs();
+    indicator.button.add_css_class("bar-recording");
+    indicator
+        .icon
+        .set_icon_name(Some("media-playback-stop-symbolic"));
+    indicator
+        .value
+        .set_text(&format!("{}:{:02}", seconds / 60, seconds % 60));
+    indicator.value.set_visible(true);
+    indicator.button.set_tooltip_text(Some("Stop recording"));
 }
 fn show_notices(indicator: &Indicator, count: usize, quiet: bool) {
     indicator.icon.set_icon_name(Some(if quiet {
