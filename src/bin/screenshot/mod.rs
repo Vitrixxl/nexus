@@ -3,7 +3,7 @@
 //! windows stay realized between captures and outputs are copied in memory, so
 //! a shortcut shows the picker within a frame or two. The same picker chooses
 //! what wf-recorder records.
-mod screencopy;
+pub(crate) mod screencopy;
 use anyhow::{Context, Result, ensure};
 use gtk::{gdk, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
@@ -16,8 +16,7 @@ use screencopy::{Capturer, Frame};
 use serde_json::Value;
 use std::{
     cell::{Cell, RefCell},
-    io::{Read, Write},
-    os::unix::net::UnixStream,
+    io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     rc::{Rc, Weak},
@@ -75,16 +74,8 @@ impl Options {
 
 /// A request on Hyprland's command socket, without starting hyprctl.
 fn hypr(command: &str) -> Result<Value> {
-    let path = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .zip(std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"))
-        .map(|(p, id)| p.join("hypr").join(id).join(".socket.sock"))
-        .context("Hyprland is not running")?;
-    let mut stream = UnixStream::connect(path)?;
-    stream.write_all(format!("j/{command}").as_bytes())?;
-    let mut reply = Vec::new();
-    stream.read_to_end(&mut reply)?;
-    Ok(serde_json::from_slice(&reply)?)
+    let reply = nexus_control::backend::hypr_socket(".socket.sock", &format!("j/{command}"))?;
+    Ok(serde_json::from_str(&reply)?)
 }
 fn num(v: &Value) -> f64 {
     v.as_f64().unwrap_or(0.)
@@ -170,7 +161,7 @@ fn windows(monitor: &Value, clients: &Value) -> Vec<(Rect, Option<u32>)> {
         })
         .collect()
 }
-fn gdk_monitor(name: &str) -> Option<gdk::Monitor> {
+pub(crate) fn gdk_monitor(name: &str) -> Option<gdk::Monitor> {
     let list = gdk::Display::default()?.monitors();
     (0..list.n_items())
         .filter_map(|i| list.item(i).and_downcast::<gdk::Monitor>())
@@ -720,14 +711,7 @@ impl Screenshot {
                 .await
                 .map_err(anyhow::Error::msg)?;
             for (view, frame) in views.iter().zip(frames) {
-                let texture = gdk::MemoryTexture::new(
-                    frame.width as i32,
-                    frame.height as i32,
-                    gdk::MemoryFormat::B8g8r8a8,
-                    &frame.data,
-                    frame.stride as usize,
-                );
-                view.picture.set_paintable(Some(&texture));
+                view.picture.set_paintable(Some(&frame.texture()));
                 *view.frame.borrow_mut() = Some(frame);
             }
         }

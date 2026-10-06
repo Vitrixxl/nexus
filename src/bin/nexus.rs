@@ -34,16 +34,23 @@ fn main() -> anyhow::Result<()> {
         // SAFETY: no other thread exists yet.
         unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
     }
+    // Vulkan picks the discrete GPU on hybrid laptops: it wakes up (seconds
+    // of delay, battery drain) and every frame then crosses to the integrated
+    // one. This process only starts helpers that do not use GTK.
+    if std::env::var_os("GSK_RENDERER").is_none() {
+        // SAFETY: no other thread exists yet.
+        unsafe { std::env::set_var("GSK_RENDERER", "gl") };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|tray|battery|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock\nnexus status\nnexus init-theme"
+            "Nexus — desktop control center\n\nnexus [launcher|tray|battery|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock [--preview]\nnexus status\nnexus init-theme"
         );
         return Ok(());
     }
     // The lock runs on its own, so that it holds whatever happens to the shell.
     if args.first().is_some_and(|a| a == "lock") {
-        return lock::run();
+        return lock::run(&args[1..]);
     }
     if args.first().is_some_and(|a| a == "init-theme") {
         theme::write_theme(&theme::load())?;
@@ -157,6 +164,20 @@ fn caption(text: &str) -> gtk::Label {
     l.add_css_class("caption");
     l
 }
+/// Applies the theme's stylesheet and light or dark preference to `display`.
+fn install_theme(display: &gtk::gdk::Display, settings: &theme::Settings) -> gtk::CssProvider {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(&theme::css(settings));
+    gtk::style_context_add_provider_for_display(
+        display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    if let Some(gtk_settings) = gtk::Settings::default() {
+        gtk_settings.set_gtk_application_prefer_dark_theme(settings.dark());
+    }
+    provider
+}
 fn vbox(spacing: i32) -> gtk::Box {
     gtk::Box::new(gtk::Orientation::Vertical, spacing)
 }
@@ -239,7 +260,7 @@ fn set_error(l: &gtk::Label, error: Option<&str>) {
 }
 #[derive(Clone)]
 struct Ui {
-    tx: mpsc::Sender<Event>,
+    tx: async_channel::Sender<Event>,
     settings: Rc<RefCell<theme::Settings>>,
     updating: Rc<Cell<bool>>,
     /// Connection operations awaiting the daemon, by network or device, with
@@ -270,14 +291,14 @@ impl Ui {
     fn run(&self, req: Request, settled: Option<String>) {
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let _ = tx.send(Event::Done(perform(&req)));
+            let _ = tx.send_blocking(Event::Done(perform(&req)));
             if let Some(target) = settled {
-                let _ = tx.send(Event::Settled(target));
+                let _ = tx.send_blocking(Event::Settled(target));
             }
             if let Ok(reply) = request(&Request::Status)
                 && let Some(state) = reply.state
             {
-                let _ = tx.send(Event::State(Box::new(state)));
+                let _ = tx.send_blocking(Event::State(Box::new(state)));
             }
         });
     }
@@ -427,7 +448,7 @@ fn ranged_slider(
                 value = newer;
             }
             if let Err(e) = perform(&action(&op, &target, &value))
-                && tx.send(Event::Done(Err(e))).is_err()
+                && tx.send_blocking(Event::Done(Err(e))).is_err()
             {
                 break;
             }
@@ -608,15 +629,12 @@ fn build(
     let control = ControlCenter::new(app);
     let window = control.window.clone();
     let stack = control.stack.clone();
-    let provider = gtk::CssProvider::new();
-    provider.load_from_data(&theme::css(&theme::load()));
-    gtk::style_context_add_provider_for_display(
+    let provider = install_theme(
         &gtk::prelude::WidgetExt::display(&shell.window),
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        &theme::load(),
     );
     let settings = Rc::new(RefCell::new(theme::load()));
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = async_channel::unbounded();
     let ui = Ui {
         tx: tx.clone(),
         settings: settings.clone(),
@@ -1111,10 +1129,15 @@ fn build(
     thread::spawn(move || {
         let mut catalogue_revision = initial_revision;
         if let Err(e) = ensure_daemon() {
-            let _ = tx.send(Event::Done(Err(e.to_string())));
+            let _ = tx.send_blocking(Event::Done(Err(e.to_string())));
         }
+        // The battery is slow to read and slow to change: every 7th poll (~5 s).
+        let mut tick = 0u32;
         while running.load(std::sync::atomic::Ordering::Relaxed) {
-            ui::shell::read_battery();
+            if tick.is_multiple_of(7) {
+                ui::shell::read_battery();
+            }
+            tick = tick.wrapping_add(1);
             match request(&Request::Status) {
                 Ok(reply) => {
                     if let Some(state) = reply.state {
@@ -1123,15 +1146,15 @@ fn build(
                             && let Some(catalogue) = reply.catalogue
                         {
                             catalogue_revision = catalogue.revision;
-                            let _ = tx.send(Event::Catalogue(Box::new(catalogue)));
+                            let _ = tx.send_blocking(Event::Catalogue(Box::new(catalogue)));
                         }
-                        if tx.send(Event::State(Box::new(state))).is_err() {
+                        if tx.send_blocking(Event::State(Box::new(state))).is_err() {
                             break;
                         }
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(Event::Done(Err(e.to_string())));
+                    let _ = tx.send_blocking(Event::Done(Err(e.to_string())));
                 }
             }
             thread::sleep(Duration::from_millis(700));
@@ -1182,15 +1205,13 @@ fn build(
                 .and_then(|all| all.iter().find(|m| m["focused"].as_bool() == Some(true)))
                 .and_then(|m| m["name"].as_str())
             {
-                let list = gtk::gdk::Display::default().unwrap().monitors();
-                *workspace_monitor.borrow_mut() = (0..list.n_items())
-                    .filter_map(|i| list.item(i).and_downcast::<gtk::gdk::Monitor>())
-                    .find(|m| m.connector().as_deref() == Some(name));
+                *workspace_monitor.borrow_mut() = screenshot::gdk_monitor(name);
             }
         }
     });
-    glib::timeout_add_local(Duration::from_millis(100), move || {
-        for event in rx.try_iter() {
+    // Events are handled as they arrive, without waking up to poll for them.
+    glib::spawn_future_local(async move {
+        while let Ok(event) = rx.recv().await {
             match event {
                 Event::Done(result) => {
                     if shell.is_open("power") {
@@ -1334,8 +1355,7 @@ fn build(
                     let theme_key = serde_json::to_string(&s.settings).unwrap_or_default();
                     if theme_key != last_theme {
                         if let Some(gtk_settings) = gtk::Settings::default() {
-                            gtk_settings
-                                .set_gtk_application_prefer_dark_theme(s.settings.mode == "dark");
+                            gtk_settings.set_gtk_application_prefer_dark_theme(s.settings.dark());
                         }
                         provider.load_from_data(&theme::css(&s.settings));
                         colors.set_active(s.settings.wallpaper_colors);

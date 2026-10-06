@@ -296,35 +296,28 @@ window.notification-popups {{ background: transparent; }}
 .nexus .notification progressbar > trough {{ background: alpha(@nexus_fg, 0.12); border: none; border-radius: 999px; min-height: 6px; }}
 .nexus .notification progressbar > trough > progress {{ background: @nexus_accent; border: none; border-radius: 999px; min-width: 0; min-height: 6px; margin: 0; }}
 window.lock-screen {{ background: @nexus_bg; }}
-.lock-screen .lock-dim {{ background: linear-gradient(to bottom, alpha(@nexus_bg, 0.45), alpha(@nexus_bg, 0.82)); }}
-.lock-screen .lock-content {{ animation: lock-enter 520ms cubic-bezier(0.16, 1, 0.3, 1) both; }}
-.lock-screen .lock-content.leaving {{ animation: lock-leave 420ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
-.lock-screen .lock-badge {{ min-width: 58px; min-height: 58px; border-radius: 999px; background: alpha(@nexus_fg, 0.08); border: 1px solid alpha(@nexus_fg, 0.12); color: @nexus_fg; margin-bottom: 14px; }}
-.lock-screen .lock-badge.unlocked {{ background: @nexus_accent; border-color: @nexus_accent; color: @nexus_on_accent; animation: badge-open 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }}
-.lock-screen .lock-user {{ font-size: 13px; font-weight: 600; letter-spacing: 0.4px; color: alpha(@nexus_fg, 0.7); }}
-.lock-screen .lock-clock {{ font-size: 92px; font-weight: 300; letter-spacing: -3px; font-feature-settings: "tnum"; margin-top: 2px; }}
-.lock-screen .lock-date {{ font-size: 17px; color: alpha(@nexus_fg, 0.72); }}
-.lock-screen .lock-slot {{ min-height: 66px; margin-top: 34px; }}
-.lock-screen .lock-field {{ background: alpha(@nexus_bg, 0.78); border: 1px solid alpha(@nexus_fg, 0.12); border-radius: 999px; padding: 15px 24px; min-width: 72px; min-height: 18px; box-shadow: 0 20px 44px -18px @nexus_shadow; transition: border-color 200ms ease; }}
-.lock-screen .lock-field.error {{ border-color: alpha(@nexus_error, 0.7); }}
-.lock-screen .lock-field.shake-a {{ animation: field-shake-a 420ms ease-out; }}
-.lock-screen .lock-field.shake-b {{ animation: field-shake-b 420ms ease-out; }}
-.lock-screen .lock-shape {{ color: @nexus_accent_fg; transition: color 200ms ease; animation: shape-in 340ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }}
-.lock-screen .lock-shape.leaving {{ animation: shape-out 170ms ease-in both; }}
-.lock-screen .lock-field.error .lock-shape {{ color: @nexus_error; }}
-.lock-screen .lock-field.checking .lock-shape {{ animation: shape-wave 900ms ease-in-out infinite; }}
-.lock-screen .lock-field.checking .lock-shape:nth-child(4n+2) {{ animation-delay: 110ms; }}
-.lock-screen .lock-field.checking .lock-shape:nth-child(4n+3) {{ animation-delay: 220ms; }}
-.lock-screen .lock-field.checking .lock-shape:nth-child(4n) {{ animation-delay: 330ms; }}
-.lock-screen .lock-message {{ font-size: 13px; color: alpha(@nexus_fg, 0.6); min-height: 20px; }}
-.lock-screen .lock-message.warning {{ color: @nexus_accent_fg; }}
-.lock-screen .lock-message.error {{ color: @nexus_error; }}
-@keyframes lock-enter {{ from {{ opacity: 0; transform: translateY(18px) scale(0.97); }} to {{ opacity: 1; transform: none; }} }}
-@keyframes lock-leave {{ from {{ opacity: 1; transform: none; }} to {{ opacity: 0; transform: translateY(-24px) scale(1.04); }} }}
-@keyframes badge-open {{ 0% {{ transform: scale(1); }} 45% {{ transform: scale(1.22) rotate(-10deg); }} 100% {{ transform: scale(1) rotate(0); }} }}
-@keyframes shape-in {{ 0% {{ opacity: 0; transform: translateY(10px) scale(0.05) rotate(-120deg); }} 60% {{ opacity: 1; transform: translateY(-3px) scale(1.4) rotate(12deg); }} 100% {{ opacity: 1; transform: none; }} }}
-@keyframes shape-out {{ from {{ opacity: 1; transform: none; }} to {{ opacity: 0; transform: translateY(8px) scale(0.05) rotate(120deg); }} }}
-@keyframes shape-wave {{ 0%, 100% {{ transform: none; opacity: 1; }} 50% {{ transform: translateY(-6px) scale(0.7); opacity: 0.45; }} }}
+.lock-screen .lock-shot {{ animation: lock-zoom 260ms cubic-bezier(0.22, 1, 0.36, 1) both; }}
+.lock-screen .lock-shot.leaving {{ animation: lock-unzoom 220ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
+.lock-screen .lock-blurred {{ animation: lock-fade-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both; }}
+.lock-screen .lock-shot.leaving .lock-blurred {{ animation: lock-fade-out 220ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
+.lock-screen .lock-card {{ background: alpha(@nexus_surface, 0.94); color: @nexus_fg; border: 1px solid alpha(@nexus_fg, 0.1); border-radius: 26px; padding: 28px 36px 22px; min-width: 340px; box-shadow: 0 30px 60px -20px @nexus_shadow; animation: card-rise 320ms cubic-bezier(0.16, 1, 0.3, 1) both; }}
+.lock-screen .lock-card.leaving {{ animation: card-drop 220ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
+.lock-screen .lock-clock {{ font-size: 72px; font-weight: 900; letter-spacing: -2px; font-feature-settings: "tnum"; margin-bottom: 18px; }}
+.lock-screen .lock-password {{ background: alpha(@nexus_fg, 0.06); border: 1px solid alpha(@nexus_fg, 0.1); border-radius: 14px; padding: 10px 14px; min-height: 22px; box-shadow: none; outline: none; transition: border-color 200ms ease; }}
+.lock-screen .lock-password:focus-within {{ border-color: alpha(@nexus_accent, 0.85); }}
+.lock-screen .lock-password.error {{ border-color: alpha(@nexus_error, 0.8); }}
+.lock-screen .lock-password.shake-a {{ animation: field-shake-a 420ms ease-out; }}
+.lock-screen .lock-password.shake-b {{ animation: field-shake-b 420ms ease-out; }}
+.lock-screen .lock-card.checking .lock-password {{ animation: field-pulse 900ms ease-in-out infinite; }}
+.lock-screen .lock-message {{ font-size: 13px; color: @nexus_muted; min-height: 18px; margin-top: 8px; }}
+.lock-screen .lock-message.error {{ color: @nexus_error; font-weight: 600; }}
+@keyframes lock-zoom {{ from {{ transform: scale(1); }} to {{ transform: scale(1.04); }} }}
+@keyframes lock-unzoom {{ from {{ transform: scale(1.04); }} to {{ transform: scale(1); }} }}
+@keyframes lock-fade-in {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+@keyframes lock-fade-out {{ from {{ opacity: 1; }} to {{ opacity: 0; }} }}
+@keyframes card-rise {{ from {{ opacity: 0; transform: translateY(700px); }} to {{ opacity: 1; transform: none; }} }}
+@keyframes card-drop {{ from {{ opacity: 1; transform: none; }} to {{ opacity: 0; transform: translateY(700px); }} }}
+@keyframes field-pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} }}
 @keyframes field-shake-a {{ 0%, 100% {{ transform: none; }} 15% {{ transform: translateX(-14px); }} 35% {{ transform: translateX(11px); }} 55% {{ transform: translateX(-7px); }} 75% {{ transform: translateX(4px); }} }}
 @keyframes field-shake-b {{ 0%, 100% {{ transform: none; }} 15% {{ transform: translateX(-14px); }} 35% {{ transform: translateX(11px); }} 55% {{ transform: translateX(-7px); }} 75% {{ transform: translateX(4px); }} }}
 

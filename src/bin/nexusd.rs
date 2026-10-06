@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
                         reachable = ok;
                     }
                     1 => poll_bluetooth(&b, &state),
-                    _ => poll_audio(&state),
+                    _ => poll_light(&state),
                 }
                 thread::sleep(Duration::from_secs(2));
             }
@@ -96,6 +96,21 @@ fn main() -> anyhow::Result<()> {
     {
         let state = state.clone();
         let (changed, pending) = std::sync::mpsc::channel::<()>();
+        // Devices, defaults and volumes are read again when PipeWire reports a
+        // change, rather than by starting a dozen helpers every 2 seconds.
+        let (audio_changed, audio_pending) = std::sync::mpsc::channel::<()>();
+        {
+            let state = state.clone();
+            thread::spawn(move || {
+                loop {
+                    let _ = audio_pending.recv_timeout(Duration::from_secs(30));
+                    // Coalesce event bursts, such as a volume drag.
+                    thread::sleep(Duration::from_millis(50));
+                    while audio_pending.try_recv().is_ok() {}
+                    poll_audio(&state);
+                }
+            });
+        }
         thread::spawn(move || {
             while pending.recv().is_ok() {
                 while pending.try_recv().is_ok() {}
@@ -109,6 +124,7 @@ fn main() -> anyhow::Result<()> {
         thread::spawn(move || {
             loop {
                 let _ = changed.send(());
+                let _ = audio_changed.send(());
                 if let Ok(mut child) = Command::new("pactl")
                     .arg("subscribe")
                     .stdin(Stdio::null())
@@ -119,8 +135,15 @@ fn main() -> anyhow::Result<()> {
                     if let Some(out) = child.stdout.take() {
                         for line in BufReader::new(out).lines() {
                             let Ok(line) = line else { break };
-                            if line.contains("sink-input") && changed.send(()).is_err() {
-                                return;
+                            if line.contains("sink-input") {
+                                if changed.send(()).is_err() {
+                                    return;
+                                }
+                            } else if ["on sink #", "on source #", "on server", "on card #"]
+                                .iter()
+                                .any(|e| line.contains(e))
+                            {
+                                let _ = audio_changed.send(());
                             }
                         }
                     }
@@ -262,8 +285,6 @@ fn poll_bluetooth(b: &Backend, state: &Mutex<Snapshot>) {
 fn poll_audio(state: &Mutex<Snapshot>) {
     let volume = backend::volume(false);
     let mic = backend::volume(true);
-    let light = backend::brightness();
-    let night_light = backend::night_light();
     let outputs = backend::audio_devices("sinks").unwrap_or_default();
     let inputs = backend::audio_devices("sources").unwrap_or_default();
     let streams = backend::app_streams();
@@ -292,6 +313,12 @@ fn poll_audio(state: &Mutex<Snapshot>) {
         s.microphone = Some(v);
         s.mic_muted = m;
     }
+}
+/// Brightness and night light: a sysfs read and a socket request.
+fn poll_light(state: &Mutex<Snapshot>) {
+    let light = backend::brightness();
+    let night_light = backend::night_light();
+    let mut s = state.lock().unwrap();
     match light {
         Ok(v) => {
             s.brightness = Some(v);

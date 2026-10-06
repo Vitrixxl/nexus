@@ -170,16 +170,21 @@ pub fn runtime() -> Result<PathBuf> {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
     Ok(dir)
 }
-pub fn listener(name: &str) -> Result<(UnixListener, fs::File)> {
+/// Held for as long as the returned file lives; fails if another process has it.
+pub fn instance_lock(name: &str) -> Result<fs::File> {
     use fs2::FileExt;
-    let dir = runtime()?;
     let lock = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(dir.join(format!("{name}.lock")))?;
+        .open(runtime()?.join(format!("{name}.lock")))?;
     lock.try_lock_exclusive()
         .context("Nexus is already running")?;
+    Ok(lock)
+}
+pub fn listener(name: &str) -> Result<(UnixListener, fs::File)> {
+    let dir = runtime()?;
+    let lock = instance_lock(name)?;
     let path = dir.join(format!("{name}.sock"));
     if path.exists() {
         fs::remove_file(&path)?;

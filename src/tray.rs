@@ -417,8 +417,9 @@ impl Host {
                         .to_string()
                 };
                 let status = string("Status");
-                if status == "Passive" {
-                    host.items.borrow_mut().remove(&address);
+                // Polled every second: only an actual change reaches the bar.
+                let changed = if status == "Passive" {
+                    host.items.borrow_mut().remove(&address).is_some()
                 } else {
                     let attention = status == "NeedsAttention";
                     let mut icon = string(if attention {
@@ -445,24 +446,29 @@ impl Host {
                     if title.is_empty() {
                         title = "Application".into();
                     }
-                    host.items.borrow_mut().insert(
-                        address.clone(),
-                        Item {
-                            address,
-                            title,
-                            icon,
-                            theme_path: string("IconThemePath"),
-                            pixels,
-                            menu: (!menu.is_empty() && menu != "/").then_some(menu),
-                            menu_only: props
-                                .get("ItemIsMenu")
-                                .and_then(|v| v.get())
-                                .unwrap_or(false),
-                            attention,
-                        },
-                    );
+                    let item = Item {
+                        address: address.clone(),
+                        title,
+                        icon,
+                        theme_path: string("IconThemePath"),
+                        pixels,
+                        menu: (!menu.is_empty() && menu != "/").then_some(menu),
+                        menu_only: props
+                            .get("ItemIsMenu")
+                            .and_then(|v| v.get())
+                            .unwrap_or(false),
+                        attention,
+                    };
+                    let mut items = host.items.borrow_mut();
+                    let changed = items.get(&address) != Some(&item);
+                    if changed {
+                        items.insert(address, item);
+                    }
+                    changed
+                };
+                if changed {
+                    host.notify();
                 }
-                host.notify();
             }
         });
     }

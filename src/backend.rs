@@ -691,22 +691,12 @@ impl Backend {
             .call("GetManagedObjects", &())?)
     }
     fn adapter(&self) -> Result<String> {
-        let mut adapters: Vec<_> = self
-            .objects()?
-            .into_iter()
-            .filter(|(_, p)| p.contains_key("org.bluez.Adapter1"))
-            .map(|(p, _)| p.to_string())
-            .collect();
-        adapters.sort();
-        adapters
-            .into_iter()
-            .next()
-            .context("No Bluetooth adapter found")
+        first_adapter(&self.objects()?)
     }
     /// Whether Bluetooth is on, its devices, and whether it is discovering.
     pub fn bluetooth(&self) -> Result<(bool, Vec<Device>, bool)> {
         let objects = self.objects()?;
-        let adapter = self.adapter()?;
+        let adapter = first_adapter(&objects)?;
         let adapter = objects
             .get(&OwnedObjectPath::try_from(adapter.as_str())?)
             .and_then(|p| p.get("org.bluez.Adapter1"));
@@ -1019,6 +1009,14 @@ fn parse_bool(value: &str) -> Result<bool> {
         _ => bail!("Expected true or false"),
     }
 }
+fn first_adapter(objects: &Objects) -> Result<String> {
+    objects
+        .iter()
+        .filter(|(_, p)| p.contains_key("org.bluez.Adapter1"))
+        .map(|(p, _)| p.to_string())
+        .min()
+        .context("No Bluetooth adapter found")
+}
 pub fn run(program: &str, args: &[&str]) -> Result<String> {
     // timeout also bounds child lifetime, including dead PipeWire/brightness helpers.
     let out = Command::new("timeout")
@@ -1116,8 +1114,18 @@ pub fn volume(source: bool) -> Result<(u8, bool)> {
     ))
 }
 pub fn brightness() -> Result<u8> {
-    let current = run("brightnessctl", &["--class=backlight", "get"])?.parse::<f64>()?;
-    let max = run("brightnessctl", &["--class=backlight", "max"])?.parse::<f64>()?;
+    // Read straight from sysfs (as brightnessctl does): polled every 2 seconds.
+    let mut devices: Vec<_> = std::fs::read_dir("/sys/class/backlight")
+        .context("No backlight available")?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    devices.sort();
+    let device = devices.first().context("No backlight available")?;
+    let read = |name: &str| -> Result<f64> {
+        Ok(std::fs::read_to_string(device.join(name))?.trim().parse()?)
+    };
+    let (current, max) = (read("brightness")?, read("max_brightness")?);
     if max <= 0. {
         bail!("No backlight available");
     }
@@ -1125,17 +1133,26 @@ pub fn brightness() -> Result<u8> {
 }
 pub const NIGHT_LIGHT_MIN: u16 = 2500;
 pub const NIGHT_LIGHT_MAX: u16 = 6500;
-/// One hyprsunset IPC command through hyprctl.
+/// One request on a socket of the running Hyprland instance (`.socket.sock`
+/// for Hyprland itself), without starting hyprctl.
+pub fn hypr_socket(socket: &str, request: &str) -> Result<String> {
+    use std::io::{Read, Write};
+    let path = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .zip(std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"))
+        .map(|(p, id)| p.join("hypr").join(id).join(socket))
+        .context("Hyprland is not running")?;
+    let mut stream = std::os::unix::net::UnixStream::connect(path)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+    stream.write_all(request.as_bytes())?;
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply)?;
+    Ok(reply.trim().into())
+}
+/// One hyprsunset IPC command.
 fn sunset(args: &[&str]) -> Result<String> {
-    let mut command = vec!["hyprsunset"];
-    command.extend_from_slice(args);
-    let reply = run("hyprctl", &command).map_err(|e| {
-        if e.to_string().contains("Couldn't connect") {
-            anyhow::anyhow!("hyprsunset is not running")
-        } else {
-            e
-        }
-    })?;
+    let reply = hypr_socket(".hyprsunset.sock", &args.join(" "))
+        .map_err(|_| anyhow::anyhow!("hyprsunset is not running"))?;
     if reply.starts_with("Invalid") || reply == "invalid command" || reply.starts_with("No profile")
     {
         bail!("hyprsunset: {reply}");

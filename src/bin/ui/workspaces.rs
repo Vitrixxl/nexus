@@ -12,8 +12,9 @@ use std::{
 };
 type State = (Value, Value);
 fn snapshot() -> anyhow::Result<State> {
-    let ws = nexus_control::backend::run("hyprctl", &["-j", "workspaces"])?;
-    let monitors = nexus_control::backend::run("hyprctl", &["-j", "monitors"])?;
+    use nexus_control::backend::hypr_socket;
+    let ws = hypr_socket(".socket.sock", "j/workspaces")?;
+    let monitors = hypr_socket(".socket.sock", "j/monitors")?;
     Ok((serde_json::from_str(&ws)?, serde_json::from_str(&monitors)?))
 }
 fn relevant(line: &str) -> bool {

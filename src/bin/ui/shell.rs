@@ -435,8 +435,11 @@ impl Bars {
         middle.append(&clock);
         middle.append(&label("Search", "bar-hint"));
         launcher.set_child(Some(&middle));
-        let middle_group = hbox(2);
-        middle_group.append(&launcher);
+        // The clock stays at the centre whatever shows on either side of it.
+        let middle_group = gtk::CenterBox::new();
+        middle_group.set_center_widget(Some(&launcher));
+        let captures = hbox(2);
+        captures.set_margin_end(2);
         let capture = self.indicator(
             monitor,
             "camera-photo-symbolic",
@@ -446,13 +449,14 @@ impl Bars {
         capture
             .button
             .connect_clicked(|_| run_nexus(&["screenshot", "--save"]));
-        middle_group.append(&capture.button);
+        captures.append(&capture.button);
         let record = self.indicator(monitor, "media-record-symbolic", "", "");
         record
             .button
             .connect_clicked(|_| run_nexus(&["screenshot", "--record"]));
         show_recording(&record, self.recording.get());
-        middle_group.append(&record.button);
+        captures.append(&record.button);
+        middle_group.set_start_widget(Some(&captures));
         let tray = self.indicator(
             monitor,
             "application-x-executable-symbolic",
@@ -461,7 +465,8 @@ impl Bars {
         );
         tray.button.set_visible(self.tray_count.get() > 0);
         self.surface.anchor("tray", monitor, &tray.button);
-        middle_group.append(&tray.button);
+        tray.button.set_margin_start(2);
+        middle_group.set_end_widget(Some(&tray.button));
         center.set_center_widget(Some(&middle_group));
         let right = hbox(0);
         let notifications = self.indicator(

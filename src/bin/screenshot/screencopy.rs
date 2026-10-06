@@ -46,6 +46,17 @@ pub struct Frame {
     pub stride: u32,
     pub data: glib::Bytes,
 }
+impl Frame {
+    pub fn texture(&self) -> gtk::gdk::MemoryTexture {
+        gtk::gdk::MemoryTexture::new(
+            self.width as i32,
+            self.height as i32,
+            gtk::gdk::MemoryFormat::B8g8r8a8,
+            &self.data,
+            self.stride as usize,
+        )
+    }
+}
 /// What to capture: an output by name, or a window by its Hyprland handle
 /// (the low 32 bits of its address).
 #[derive(Clone)]
