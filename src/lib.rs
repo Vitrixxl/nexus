@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod backend;
 pub mod launcher;
+pub mod monitor;
 pub mod night;
 pub mod notifications;
 pub mod power;

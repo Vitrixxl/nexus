@@ -344,6 +344,17 @@ window.nexus.nexus-bar {{ background: transparent; }}
 .nexus-bar button.bar-recording {{ background: alpha(@nexus_error, 0.16); }}
 .nexus-bar .workspace {{ color: @nexus_muted; padding: 0; min-width: 26px; }}
 .nexus-bar .workspace.active {{ background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; font-weight: 700; }}
+.monitor-page {{ padding: 18px; }}
+.monitor .monitor-value {{ font-size: 20px; font-weight: 650; font-feature-settings: "tnum"; }}
+.monitor .monitor-graph {{ color: @nexus_accent_fg; }}
+.monitor .monitor-bar > trough {{ background: alpha(@nexus_fg, 0.12); border: none; border-radius: 999px; min-height: 6px; }}
+.monitor .monitor-bar > trough > progress {{ background: @nexus_accent; border: none; border-radius: 999px; min-height: 6px; }}
+.monitor .monitor-columns button {{ padding: 2px 8px; min-height: 0; font-size: 11px; font-weight: 600; color: @nexus_muted; background: transparent; }}
+.monitor .monitor-columns button:hover {{ color: @nexus_fg; }}
+.monitor .monitor-list {{ background: transparent; }}
+.monitor .monitor-list row {{ padding: 4px 8px; border-radius: 8px; font-size: 13px; font-feature-settings: "tnum"; }}
+.monitor .monitor-list row:hover {{ background: alpha(@nexus_fg, 0.05); }}
+.monitor .monitor-list row:selected {{ background: alpha(@nexus_accent, 0.18); color: @nexus_fg; }}
 .tray-panel {{ padding: 18px; }}
 .battery-panel {{ padding: 18px; }}
 .battery-panel .power-profile {{ padding: 10px 12px; border-radius: 10px; }}

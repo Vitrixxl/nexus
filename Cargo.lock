@@ -959,6 +959,7 @@ dependencies = [
  "gtk4-layer-shell",
  "gtk4-session-lock",
  "image",
+ "libc",
  "serde",
  "serde_json",
  "signal-hook",

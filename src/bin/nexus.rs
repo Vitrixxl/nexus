@@ -15,7 +15,7 @@ use std::{
 };
 use ui::control::ControlCenter;
 
-const PAGES: [(&str, &str, &str); 6] = [
+const PAGES: [(&str, &str, &str); 7] = [
     ("wifi", "Wi-Fi", "network-wireless-symbolic"),
     ("bluetooth", "Bluetooth", "bluetooth-symbolic"),
     ("sound", "Sound", "audio-volume-high-symbolic"),
@@ -25,6 +25,7 @@ const PAGES: [(&str, &str, &str); 6] = [
         "Appearance",
         "preferences-desktop-wallpaper-symbolic",
     ),
+    ("monitor", "Monitor", "power-profile-performance-symbolic"),
     ("power", "Power", "system-shutdown-symbolic"),
 ];
 fn main() -> anyhow::Result<()> {
@@ -60,7 +61,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|tray|battery|control|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock [--preview]\nnexus status\nnexus init-theme"
+            "Nexus — desktop control center\n\nnexus [launcher|tray|battery|control|monitor|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock [--preview]\nnexus status\nnexus init-theme"
         );
         return Ok(());
     }
@@ -180,7 +181,6 @@ fn caption(text: &str) -> gtk::Label {
     l.add_css_class("caption");
     l
 }
-/// Applies the theme's stylesheet and light or dark preference to `display`.
 /// Whether the GPU the firmware booted on, which drives the screen, is NVIDIA's.
 fn nvidia_drives_display() -> bool {
     let Ok(cards) = std::fs::read_dir("/sys/class/drm") else {
@@ -192,6 +192,7 @@ fn nvidia_drives_display() -> bool {
         read("boot_vga").trim() == "1" && read("vendor").trim() == "0x10de"
     })
 }
+/// Applies the theme's stylesheet and light or dark preference to `display`.
 fn install_theme(display: &gtk::gdk::Display, settings: &theme::Settings) -> gtk::CssProvider {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(&theme::css(settings));
@@ -894,6 +895,7 @@ fn build(
     colors_row.append(&colors);
     appearance.append(&colors_row);
     stack.add_named(&appearance, Some("appearance"));
+    stack.add_named(&ui::monitor::page(), Some("monitor"));
     stack.set_visible_child_name("wifi");
 
     // Power stays a full-screen overlay of floating tiles; choices are confirmed

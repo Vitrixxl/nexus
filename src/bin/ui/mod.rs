@@ -1,6 +1,7 @@
 pub mod battery;
 pub mod control;
 pub mod launcher;
+pub mod monitor;
 pub mod notifications;
 pub mod shell;
 pub mod slide;
