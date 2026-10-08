@@ -15,6 +15,7 @@ use std::{
 /// Popups on screen at once; older ones remain in the history.
 const MAX_POPUPS: usize = 4;
 const SLIDE: u32 = 260;
+const POPUP_WIDTH: i32 = 400;
 
 fn picture(image: &Image, size: i32) -> Option<gtk::Image> {
     let widget = match image {
@@ -243,7 +244,7 @@ impl Popups {
         let list = vbox(0);
         list.add_css_class("popup-panel");
         list.set_overflow(gtk::Overflow::Hidden);
-        list.set_width_request(400);
+        list.set_width_request(POPUP_WIDTH);
         list.set_margin_top(FILLET);
         list.set_margin_start(FILLET);
         let shape = gtk::Overlay::new();
@@ -284,6 +285,7 @@ impl Popups {
         let popup = match existing {
             Some(popup) => {
                 popup.slide.set_child(&content);
+                self.fit();
                 popup
             }
             None => self.add(id, &content),
@@ -306,6 +308,7 @@ impl Popups {
         revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
         revealer.set_transition_duration(SLIDE);
         let slide = Slide::default();
+        slide.set_measure_width(POPUP_WIDTH);
         slide.set_child(content);
         revealer.set_child(Some(&slide));
         let weak = Rc::downgrade(self);
@@ -353,8 +356,38 @@ impl Popups {
         self.list.append(&revealer);
         self.shown.borrow_mut().insert(0, popup.clone());
         self.window.set_visible(true);
-        glib::idle_add_local_once(move || revealer.set_reveal_child(true));
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            revealer.set_reveal_child(true);
+            if let Some(s) = weak.upgrade() {
+                s.fit_during(&revealer);
+            }
+        });
         popup
+    }
+    /// A window keeps its size as its content shrinks: size it to its cards.
+    fn fit(&self) {
+        let Some(child) = self.window.child() else {
+            return;
+        };
+        let (_, width, _, _) = child.measure(gtk::Orientation::Horizontal, -1);
+        let (_, height, _, _) = child.measure(gtk::Orientation::Vertical, width);
+        self.window.set_default_size(width, height);
+    }
+    /// Fits the window every frame of a card's slide, so that the panel rises
+    /// and sinks with it.
+    fn fit_during(self: &Rc<Self>, revealer: &gtk::Revealer) {
+        let weak = Rc::downgrade(self);
+        revealer.add_tick_callback(move |revealer, _| {
+            if let Some(s) = weak.upgrade() {
+                s.fit();
+            }
+            if revealer.reveals_child() == revealer.is_child_revealed() {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
     fn stop(popup: &Popup) {
         if let Some(timer) = popup.timer.take() {
@@ -378,7 +411,7 @@ impl Popups {
     }
     /// Slides the popup away. A popup that `expired` lets the server drop a
     /// transient notification.
-    pub fn hide(&self, id: u32, expired: bool) {
+    pub fn hide(self: &Rc<Self>, id: u32, expired: bool) {
         let popup = {
             let mut shown = self.shown.borrow_mut();
             let Some(i) = shown.iter().position(|p| p.id == id) else {
@@ -388,24 +421,12 @@ impl Popups {
         };
         Self::stop(&popup);
         popup.revealer.set_reveal_child(false);
-        // A window keeps its size as its content shrinks: ask again for the
-        // smallest each frame, so that the panel sinks with the card.
-        let window = self.window.downgrade();
-        popup.revealer.add_tick_callback(move |revealer, _| {
-            if let Some(window) = window.upgrade() {
-                window.set_default_size(1, 1);
-            }
-            if revealer.is_child_revealed() {
-                glib::ControlFlow::Continue
-            } else {
-                glib::ControlFlow::Break
-            }
-        });
+        self.fit_during(&popup.revealer);
         if expired {
             self.server.expire(id);
         }
     }
-    pub fn clear(&self) {
+    pub fn clear(self: &Rc<Self>) {
         let ids: Vec<_> = self.shown.borrow().iter().map(|p| p.id).collect();
         for id in ids {
             self.hide(id, false);

@@ -11,6 +11,8 @@ mod imp {
         pub offset: Cell<(f32, f32)>,
         /// Bumped by every glide or drag, so that an older glide stops.
         pub motion: Cell<u32>,
+        /// The width its height is measured at when none is given.
+        pub width: Cell<i32>,
     }
     #[glib::object_subclass]
     impl ObjectSubclass for Slide {
@@ -27,6 +29,15 @@ mod imp {
     }
     impl WidgetImpl for Slide {
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            // A revealer asks for a height at no particular width, for which
+            // wrapped text answers as if squeezed narrow.
+            let width = self.width.get();
+            let for_size = if for_size < 0 && orientation == gtk::Orientation::Vertical && width > 0
+            {
+                width
+            } else {
+                for_size
+            };
             self.obj()
                 .first_child()
                 .map_or((0, 0, -1, -1), |c| c.measure(orientation, for_size))
@@ -56,6 +67,11 @@ impl Slide {
             old.unparent();
         }
         child.set_parent(self);
+    }
+    /// Measures its height at `width` when asked for one at no width.
+    pub fn set_measure_width(&self, width: i32) {
+        self.imp().width.set(width);
+        self.queue_resize();
     }
     /// The size it asks for, which it may not have been given yet.
     pub fn natural_size(&self) -> (f32, f32) {
