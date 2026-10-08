@@ -961,7 +961,6 @@ impl Backend {
                     })?;
                 crate::night::set(true, Some(k))?;
             }
-            "night-light-schedule" => crate::night::follow_schedule()?,
             "sleep" | "restart" | "shutdown" => {
                 self.proxy(
                     "org.freedesktop.login1",

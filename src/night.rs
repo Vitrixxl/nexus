@@ -1,6 +1,6 @@
 //! Night light: warms every output through wlr-gamma-control, from the daemon,
 //! in place of hyprsunset. It follows a fixed schedule; a manual change holds
-//! until the schedule next turns, or until it is asked to follow it again.
+//! until the schedule next turns.
 use crate::NightLight;
 use anyhow::{Context, Result, bail};
 use std::{
@@ -276,13 +276,6 @@ pub fn set(enabled: bool, temperature: Option<u16>) -> Result<()> {
         if let Some(k) = temperature {
             s.light.temperature = k;
         }
-    })
-}
-pub fn follow_schedule() -> Result<()> {
-    let night = night_now();
-    change(|s| {
-        s.manual = None;
-        s.light.enabled = night;
     })
 }
 

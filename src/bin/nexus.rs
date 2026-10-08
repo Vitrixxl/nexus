@@ -719,12 +719,6 @@ fn build(
     let night_title = label("Night light", "row-title");
     night_title.set_hexpand(true);
     night_head.append(&night_title);
-    let night_schedule = button("Use schedule");
-    night_schedule.add_css_class("flat");
-    night_schedule.set_valign(gtk::Align::Center);
-    night_schedule.set_tooltip_text(Some("Back to the schedule: on from 21:00 to 7:30"));
-    ui.bind(&night_schedule, action("night-light-schedule", "", ""));
-    night_head.append(&night_schedule);
     let night_toggle = toggle(&ui, "night-light");
     night_head.append(&night_toggle);
     night_card.append(&night_head);
@@ -1308,7 +1302,6 @@ fn build(
                     let night = s.night_light.clone().unwrap_or_default();
                     night_toggle.set_sensitive(s.night_light.is_some());
                     night_toggle.set_active(night.enabled);
-                    night_schedule.set_sensitive(s.night_light.is_some());
                     night_temperature.set_sensitive(s.night_light.is_some());
                     if !night_temperature.has_focus() && s.night_light.is_some() {
                         night_temperature.set_value(f64::from(night.temperature));
