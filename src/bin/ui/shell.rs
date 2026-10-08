@@ -362,7 +362,7 @@ impl Surface {
 /// notification popups, over a dimmed backdrop.
 pub struct Drawer {
     window: gtk::ApplicationWindow,
-    revealer: gtk::Revealer,
+    slide: super::slide::Slide,
     open: Cell<bool>,
 }
 impl Drawer {
@@ -397,29 +397,17 @@ impl Drawer {
         let corner = fillet(Edge::Bottom, false, SIDE_FILLET);
         corner.set_halign(gtk::Align::Start);
         shape.add_overlay(&corner);
-        let revealer = gtk::Revealer::new();
-        revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
-        revealer.set_transition_duration(260);
-        revealer.set_halign(gtk::Align::End);
-        revealer.set_valign(gtk::Align::End);
-        revealer.set_child(Some(&shape));
-        overlay.add_overlay(&revealer);
+        let slide = super::slide::Slide::default();
+        slide.set_halign(gtk::Align::End);
+        slide.set_valign(gtk::Align::End);
+        slide.set_child(&shape);
+        overlay.add_overlay(&slide);
         window.set_child(Some(&overlay));
         let this = Rc::new(Self {
             window,
-            revealer,
+            slide,
             open: Cell::new(false),
         });
-        let weak = Rc::downgrade(&this);
-        this.revealer
-            .connect_child_revealed_notify(move |revealer| {
-                if let Some(s) = weak.upgrade()
-                    && !s.open.get()
-                    && !revealer.is_child_revealed()
-                {
-                    s.window.set_visible(false);
-                }
-            });
         let weak = Rc::downgrade(&this);
         let click = gtk::GestureClick::new();
         click.connect_released(move |_, _, _, _| {
@@ -461,20 +449,25 @@ impl Drawer {
             self.window.set_visible(false);
             self.window.set_monitor(Some(monitor));
         }
+        // Flies in diagonally from beyond the corner.
+        if !self.window.is_visible() {
+            let (width, height) = self.slide.natural_size();
+            self.slide.drag_to(width, height);
+        }
         self.open.set(true);
         self.window.set_keyboard_mode(KeyboardMode::OnDemand);
         self.window.present();
-        // Mapped first, so that the panel slides in rather than appearing.
-        let s = self.clone();
-        glib::idle_add_local_once(move || s.revealer.set_reveal_child(s.open.get()));
+        self.slide.glide((0., 0.), 260, || {});
     }
-    pub fn hide(&self) {
+    pub fn hide(self: &Rc<Self>) {
         self.open.set(false);
         self.window.set_keyboard_mode(KeyboardMode::None);
-        self.revealer.set_reveal_child(false);
-        if !self.revealer.is_child_revealed() {
-            self.window.set_visible(false);
-        }
+        let s = self.clone();
+        self.slide.glide(self.slide.natural_size(), 220, move || {
+            if !s.open.get() {
+                s.window.set_visible(false);
+            }
+        });
     }
 }
 
