@@ -466,6 +466,10 @@ impl Bars {
         tray.button.set_visible(self.tray_count.get() > 0);
         self.surface.anchor("tray", monitor, &tray.button);
         tray.button.set_margin_start(2);
+        // The end slot is as wide as the capture buttons; keep the tray against Search.
+        tray.button.set_hexpand(true);
+        tray.button.set_halign(gtk::Align::Start);
+        middle_group.set_hexpand(false);
         middle_group.set_end_widget(Some(&tray.button));
         center.set_center_widget(Some(&middle_group));
         let right = hbox(0);
