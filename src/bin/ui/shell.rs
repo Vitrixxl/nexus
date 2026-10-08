@@ -25,8 +25,8 @@ struct PanelAnchor {
     button: glib::WeakRef<gtk::Button>,
 }
 const FILLET: i32 = 14;
-/// The drawer's and popups' fillets sweep along the side of the screen too.
-pub const SIDE_FILLET: i32 = 30;
+/// The drawer's and popups' fillets are round, as wide as their panels' corners.
+pub const SIDE_FILLET: i32 = 22;
 /// The bar's fillets sweep further along the screen edge than down its sides.
 const BAR_FILLET: i32 = 30;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
@@ -43,12 +43,14 @@ const SHADOW: i32 = 64;
 /// out of the edge instead of meeting it at a right angle. It runs `length`
 /// along the edge, `after` the surface (right of it, or below it on the right
 /// edge), plus a solid line laid over the surface's side, so no seam shows
-/// between the two at fractional scales.
+/// between the two at fractional scales. Off the top edge it is `FILLET` deep,
+/// elsewhere as deep as it is long.
 pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.add_css_class("panel-fillet");
+    let depth = if edge == Edge::Top { FILLET } else { length };
     if edge == Edge::Right {
-        area.set_content_width(FILLET);
+        area.set_content_width(depth);
         area.set_content_height(length + 1);
         area.set_halign(gtk::Align::End);
         area.set_valign(if after {
@@ -58,7 +60,7 @@ pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
         });
     } else {
         area.set_content_width(length + 1);
-        area.set_content_height(FILLET);
+        area.set_content_height(depth);
         area.set_valign(if edge == Edge::Bottom {
             gtk::Align::End
         } else {
