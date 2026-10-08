@@ -29,8 +29,6 @@ pub const FILLET: i32 = 22;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
 /// so the panel joins it.
 const BAR_BOTTOM: i32 = 33;
-/// Share of the monitor width the bar keeps its content clear of on each side.
-const BAR_INSET: f64 = 0.15;
 /// Room around the panel for its drop shadow; margins are not part of the input
 /// target, so clicks there still reach the dismissing backdrop.
 const SHADOW: i32 = 64;
@@ -602,8 +600,6 @@ impl Bars {
         for edge in [Edge::Top, Edge::Left, Edge::Right] {
             window.set_anchor(edge, true);
         }
-        // Across the whole screen, its content kept inset on each side.
-        let side = (f64::from(monitor.geometry().width()) * BAR_INSET).round() as i32;
         window.auto_exclusive_zone_enable();
         let center = gtk::CenterBox::new();
         center.add_css_class("bar-content");
@@ -711,8 +707,6 @@ impl Bars {
         }
         center.set_end_widget(Some(&right));
         center.set_hexpand(true);
-        center.set_margin_start(side);
-        center.set_margin_end(side);
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         body.add_css_class("bar-body");
         body.append(&center);
