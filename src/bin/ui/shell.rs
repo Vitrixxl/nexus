@@ -26,8 +26,8 @@ struct PanelAnchor {
 }
 /// Concave corners are round, as wide as the convex corners of their surface.
 pub const FILLET: i32 = 22;
-/// The bar's sweep further down its sides than its 14px corners, which would
-/// leave them a sliver.
+/// The bar's sweep most of the way down its sides, and its 10px corners take
+/// the rest: overlapping, the fillet's solid edge would stick out of the corner.
 const BAR_FILLET: i32 = 24;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
 /// so the panel joins it.
