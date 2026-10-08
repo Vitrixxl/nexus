@@ -335,15 +335,15 @@ window.nexus.nexus-bar {{ background: transparent; }}
 .nexus-bar button:hover {{ background: alpha(@nexus_fg, 0.08); }}
 .nexus-bar button.bar-static:hover {{ background: transparent; }}
 .nexus-bar .bar-brand {{ color: @nexus_accent_fg; font-size: 14px; font-weight: 700; padding: 0 12px; }}
-.nexus-bar .bar-search {{ background: @nexus_surface; padding: 0 16px; border-radius: 8px; }}
-.nexus-bar .bar-search:hover {{ background: shade(@nexus_surface, 1.15); }}
+.nexus-bar .bar-search {{ background: alpha(@nexus_fg, 0.06); padding: 0 16px; border-radius: 8px; }}
+.nexus-bar .bar-search:hover {{ background: alpha(@nexus_fg, 0.1); }}
 .nexus-bar .bar-hint {{ color: @nexus_muted; font-size: 10px; }}
 .nexus-bar .bar-clock {{ font-size: 12px; }}
 .nexus-bar .bar-power {{ color: @nexus_accent_fg; padding: 0 12px; }}
 .nexus-bar button.bar-recording, .nexus-bar button.bar-recording label {{ color: @nexus_danger; }}
 .nexus-bar button.bar-recording {{ background: alpha(@nexus_error, 0.16); }}
 .nexus-bar .workspace {{ color: @nexus_muted; padding: 0; min-width: 26px; }}
-.nexus-bar .workspace.active {{ background: @nexus_surface; color: @nexus_accent_fg; }}
+.nexus-bar .workspace.active {{ background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; font-weight: 700; }}
 .tray-panel {{ padding: 18px; }}
 .battery-panel {{ padding: 18px; }}
 .battery-panel .power-profile {{ padding: 10px 12px; border-radius: 10px; }}
