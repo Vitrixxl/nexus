@@ -26,13 +26,10 @@ struct PanelAnchor {
 }
 /// Concave corners are round, as wide as the convex corners of their surface.
 pub const FILLET: i32 = 22;
-/// The bar's sweep most of the way down its sides, and its 10px corners take
-/// the rest: overlapping, the fillet's solid edge would stick out of the corner.
-const BAR_FILLET: i32 = 24;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
 /// so the panel joins it.
 const BAR_BOTTOM: i32 = 33;
-/// Share of the monitor width left empty on each side of the bar.
+/// Share of the monitor width the bar keeps its content clear of on each side.
 const BAR_INSET: f64 = 0.15;
 /// Room around the panel for its drop shadow; margins are not part of the input
 /// target, so clicks there still reach the dismissing backdrop.
@@ -605,12 +602,8 @@ impl Bars {
         for edge in [Edge::Top, Edge::Left, Edge::Right] {
             window.set_anchor(edge, true);
         }
-        // A little narrower than the screen and centred, hanging from its top edge;
-        // the margins leave room for the fillets on each side.
-        let side =
-            ((f64::from(monitor.geometry().width()) * BAR_INSET).round() as i32).max(BAR_FILLET);
-        window.set_margin(Edge::Left, side - BAR_FILLET);
-        window.set_margin(Edge::Right, side - BAR_FILLET);
+        // Across the whole screen, its content kept inset on each side.
+        let side = (f64::from(monitor.geometry().width()) * BAR_INSET).round() as i32;
         window.auto_exclusive_zone_enable();
         let center = gtk::CenterBox::new();
         center.add_css_class("bar-content");
@@ -717,18 +710,13 @@ impl Bars {
             right.append(&b.button);
         }
         center.set_end_widget(Some(&right));
-        center.add_css_class("bar-body");
         center.set_hexpand(true);
-        center.set_margin_start(BAR_FILLET);
-        center.set_margin_end(BAR_FILLET);
-        let shape = gtk::Overlay::new();
-        shape.set_child(Some(&center));
-        for (right, align) in [(false, gtk::Align::Start), (true, gtk::Align::End)] {
-            let corner = fillet(Edge::Top, right, BAR_FILLET);
-            corner.set_halign(align);
-            shape.add_overlay(&corner);
-        }
-        window.set_child(Some(&shape));
+        center.set_margin_start(side);
+        center.set_margin_end(side);
+        let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        body.add_css_class("bar-body");
+        body.append(&center);
+        window.set_child(Some(&body));
         window.present();
         let (count, quiet) = self.notices.get();
         show_notices(&notifications, count, quiet);

@@ -329,7 +329,7 @@ window.lock-screen {{ background: @nexus_bg; }}
 @keyframes field-shake-b {{ 0%, 100% {{ transform: none; }} 15% {{ transform: translateX(-14px); }} 35% {{ transform: translateX(11px); }} 55% {{ transform: translateX(-7px); }} 75% {{ transform: translateX(4px); }} }}
 
 window.nexus.nexus-bar {{ background: transparent; }}
-.nexus-bar .bar-body {{ background: @nexus_bg; border-radius: 0 0 10px 10px; }}
+.nexus-bar .bar-body {{ background: @nexus_bg; border-radius: 0 0 14px 14px; }}
 .nexus-bar .bar-content {{ padding: 4px 8px; min-height: 26px; }}
 .nexus-bar button {{ padding: 0 10px; min-height: 26px; margin: 0 1px; font-size: 12px; background: transparent; border-radius: 8px; }}
 .nexus-bar button:hover {{ background: alpha(@nexus_fg, 0.08); }}
