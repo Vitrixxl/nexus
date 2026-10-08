@@ -2,7 +2,7 @@ use super::{
     super::{caption, hbox, label, vbox},
     shell::{SIDE_FILLET, fillet},
 };
-use gtk::{gio, glib, prelude::*};
+use gtk::{gio, glib, prelude::*, subclass::prelude::ObjectSubclassIsExt};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nexus_control::notifications::{Image, Notification, Server, Urgency};
 use std::{
@@ -13,7 +13,7 @@ use std::{
 
 /// Popups on screen at once; older ones remain in the history.
 const MAX_POPUPS: usize = 4;
-const SLIDE: u32 = 180;
+const SLIDE: u32 = 260;
 
 fn picture(image: &Image, size: i32) -> Option<gtk::Image> {
     let widget = match image {
@@ -178,9 +178,131 @@ fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>
     card
 }
 
+/// Holds its child where its parent puts it, shifted right by `offset` pixels
+/// without moving anything else: the card being swiped away.
+mod slide {
+    use gtk::{glib, gsk, prelude::*, subclass::prelude::*};
+    use std::cell::Cell;
+    #[derive(Default)]
+    pub struct Imp {
+        pub offset: Cell<f32>,
+        /// Bumped by every glide or drag, so that an older glide stops.
+        pub motion: Cell<u32>,
+    }
+    #[glib::object_subclass]
+    impl ObjectSubclass for Imp {
+        const NAME: &'static str = "NexusSlide";
+        type Type = super::Slide;
+        type ParentType = gtk::Widget;
+    }
+    impl ObjectImpl for Imp {
+        fn dispose(&self) {
+            while let Some(child) = self.obj().first_child() {
+                child.unparent();
+            }
+        }
+    }
+    impl WidgetImpl for Imp {
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            self.obj()
+                .first_child()
+                .map_or((0, 0, -1, -1), |c| c.measure(orientation, for_size))
+        }
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            if let Some(child) = self.obj().first_child() {
+                let shift = gsk::Transform::new()
+                    .translate(&gtk::graphene::Point::new(self.offset.get(), 0.));
+                child.allocate(width, height, baseline, Some(shift));
+            }
+        }
+    }
+}
+glib::wrapper! {
+    pub struct Slide(ObjectSubclass<slide::Imp>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+impl Slide {
+    fn new() -> Self {
+        glib::Object::new()
+    }
+    fn set_child(&self, child: &impl IsA<gtk::Widget>) {
+        while let Some(old) = self.first_child() {
+            old.unparent();
+        }
+        child.set_parent(self);
+    }
+    fn offset(&self) -> f32 {
+        self.imp().offset.get()
+    }
+    /// Moves the card at once, stopping any glide.
+    fn drag_to(&self, offset: f32) {
+        let motion = &self.imp().motion;
+        motion.set(motion.get().wrapping_add(1));
+        self.set_offset(offset);
+    }
+    fn set_offset(&self, offset: f32) {
+        self.imp().offset.set(offset);
+        self.set_opacity(f64::from(1. - offset / self.width().max(1) as f32 * 0.7));
+        self.queue_allocate();
+    }
+    /// Eases the card to `target`, then calls `done`.
+    fn glide(&self, target: f32, done: impl FnOnce() + 'static) {
+        let from = self.offset();
+        self.drag_to(from);
+        let motion = self.imp().motion.get();
+        let start = Cell::new(None::<i64>);
+        let done = RefCell::new(Some(done));
+        self.add_tick_callback(move |slide, clock| {
+            if slide.imp().motion.get() != motion {
+                return glib::ControlFlow::Break;
+            }
+            let begun = *start.get().get_or_insert(clock.frame_time());
+            start.set(Some(begun));
+            let t = ((clock.frame_time() - begun) as f32 / 200_000.).min(1.);
+            slide.set_offset(from + (target - from) * (1. - (1. - t).powi(3)));
+            if t < 1. {
+                return glib::ControlFlow::Continue;
+            }
+            if let Some(done) = done.take() {
+                done();
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+/// Dragging the card right shifts it; let go far enough and it flies off
+/// the screen before `dismiss` runs, else it springs back.
+fn swipe(slide: &Slide, dismiss: impl Fn() + 'static) {
+    let drag = gtk::GestureDrag::new();
+    let s = slide.downgrade();
+    drag.connect_drag_update(move |gesture, dx, _| {
+        let Some(slide) = s.upgrade() else { return };
+        // Past a few pixels this is a swipe, not a click on the card.
+        if dx > 6. {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        }
+        slide.drag_to(dx.max(0.) as f32);
+    });
+    let s = slide.downgrade();
+    let dismiss = Rc::new(dismiss);
+    drag.connect_drag_end(move |_, dx, _| {
+        let Some(slide) = s.upgrade() else { return };
+        let width = slide.width() as f32;
+        if dx as f32 > (width * 0.3).min(120.) {
+            let dismiss = dismiss.clone();
+            slide.glide(width, move || dismiss());
+        } else {
+            slide.glide(0., || {});
+        }
+    });
+    slide.add_controller(drag);
+}
+
 struct Popup {
     id: u32,
     revealer: gtk::Revealer,
+    slide: Slide,
     timeout: Cell<Option<Duration>>,
     timer: RefCell<Option<glib::SourceId>>,
 }
@@ -253,7 +375,7 @@ impl Popups {
         let existing = self.shown.borrow().iter().find(|p| p.id == id).cloned();
         let popup = match existing {
             Some(popup) => {
-                popup.revealer.set_child(Some(&content));
+                popup.slide.set_child(&content);
                 popup
             }
             None => self.add(id, &content),
@@ -275,10 +397,19 @@ impl Popups {
         let revealer = gtk::Revealer::new();
         revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
         revealer.set_transition_duration(SLIDE);
-        revealer.set_child(Some(content));
+        let slide = Slide::new();
+        slide.set_child(content);
+        revealer.set_child(Some(&slide));
+        let weak = Rc::downgrade(self);
+        swipe(&slide, move || {
+            if let Some(s) = weak.upgrade() {
+                s.hide(id, false);
+            }
+        });
         let popup = Rc::new(Popup {
             id,
             revealer: revealer.clone(),
+            slide,
             timeout: Cell::new(None),
             timer: RefCell::default(),
         });
@@ -349,6 +480,19 @@ impl Popups {
         };
         Self::stop(&popup);
         popup.revealer.set_reveal_child(false);
+        // A window keeps its size as its content shrinks: ask again for the
+        // smallest each frame, so that the panel sinks with the card.
+        let window = self.window.downgrade();
+        popup.revealer.add_tick_callback(move |revealer, _| {
+            if let Some(window) = window.upgrade() {
+                window.set_default_size(1, 1);
+            }
+            if revealer.is_child_revealed() {
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
+            }
+        });
         if expired {
             self.server.expire(id);
         }
