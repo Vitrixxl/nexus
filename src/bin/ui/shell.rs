@@ -25,7 +25,7 @@ struct PanelAnchor {
     button: glib::WeakRef<gtk::Button>,
 }
 const FILLET: i32 = 14;
-/// The drawer's and popups' fillets are round, as wide as their panels' corners.
+/// The popups' fillets are round, as wide as their panel's corner.
 pub const SIDE_FILLET: i32 = 22;
 /// The bar's fillets sweep further along the screen edge than down its sides.
 const BAR_FILLET: i32 = 30;
@@ -39,7 +39,7 @@ const BAR_INSET: f64 = 0.15;
 const SHADOW: i32 = 64;
 /// Concave corner joining a screen or bar edge to the side of the surface
 /// hanging from it: the bar from the screen edge, a dropped panel from the bar,
-/// the drawer and popups from the side and bottom of the screen, so each flows
+/// the popups from the side and bottom of the screen, so each flows
 /// out of the edge instead of meeting it at a right angle. It runs `length`
 /// along the edge, `after` the surface (right of it, or below it on the right
 /// edge), plus a solid line laid over the surface's side, so no seam shows
@@ -388,19 +388,12 @@ impl Drawer {
         overlay.set_child(Some(&backdrop));
         let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         panel.add_css_class("drawer-panel");
-        panel.set_margin_top(SIDE_FILLET);
-        panel.set_margin_bottom(SIDE_FILLET);
         panel.append(child);
-        let shape = gtk::Overlay::new();
-        shape.set_child(Some(&panel));
-        for after in [false, true] {
-            shape.add_overlay(&fillet(Edge::Right, after, SIDE_FILLET));
-        }
         let revealer = gtk::Revealer::new();
         revealer.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
         revealer.set_transition_duration(180);
         revealer.set_halign(gtk::Align::End);
-        revealer.set_child(Some(&shape));
+        revealer.set_child(Some(&panel));
         overlay.add_overlay(&revealer);
         window.set_child(Some(&overlay));
         let this = Rc::new(Self {
