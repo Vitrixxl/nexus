@@ -24,11 +24,9 @@ struct PanelAnchor {
     monitor: gtk::gdk::Monitor,
     button: glib::WeakRef<gtk::Button>,
 }
-const FILLET: i32 = 14;
-/// The corner panels' fillets are round, as wide as their panels' corner.
-pub const SIDE_FILLET: i32 = 22;
-/// The bar's fillets sweep further along the screen edge than down its sides.
-const BAR_FILLET: i32 = 30;
+/// Concave corners are round, as wide as the convex corners of their surface.
+pub const FILLET: i32 = 22;
+const BAR_FILLET: i32 = 14;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
 /// so the panel joins it.
 const BAR_BOTTOM: i32 = 33;
@@ -43,14 +41,12 @@ const SHADOW: i32 = 64;
 /// out of the edge instead of meeting it at a right angle. It runs `length`
 /// along the edge, `after` the surface (right of it, or below it on the right
 /// edge), plus a solid line laid over the surface's side, so no seam shows
-/// between the two at fractional scales. Off the top edge it is `FILLET` deep,
-/// elsewhere as deep as it is long.
+/// between the two at fractional scales. It is as deep as it is long.
 pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.add_css_class("panel-fillet");
-    let depth = if edge == Edge::Top { FILLET } else { length };
     if edge == Edge::Right {
-        area.set_content_width(depth);
+        area.set_content_width(length);
         area.set_content_height(length + 1);
         area.set_halign(gtk::Align::End);
         area.set_valign(if after {
@@ -60,7 +56,7 @@ pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
         });
     } else {
         area.set_content_width(length + 1);
-        area.set_content_height(depth);
+        area.set_content_height(length);
         area.set_valign(if edge == Edge::Bottom {
             gtk::Align::End
         } else {
@@ -388,13 +384,13 @@ impl Drawer {
         overlay.set_child(Some(&backdrop));
         let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         panel.add_css_class("drawer-panel");
-        panel.set_margin_top(SIDE_FILLET);
-        panel.set_margin_start(SIDE_FILLET);
+        panel.set_margin_top(FILLET);
+        panel.set_margin_start(FILLET);
         panel.append(child);
         let shape = gtk::Overlay::new();
         shape.set_child(Some(&panel));
-        shape.add_overlay(&fillet(Edge::Right, false, SIDE_FILLET));
-        let corner = fillet(Edge::Bottom, false, SIDE_FILLET);
+        shape.add_overlay(&fillet(Edge::Right, false, FILLET));
+        let corner = fillet(Edge::Bottom, false, FILLET);
         corner.set_halign(gtk::Align::Start);
         shape.add_overlay(&corner);
         let slide = super::slide::Slide::default();

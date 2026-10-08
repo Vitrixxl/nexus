@@ -1,6 +1,6 @@
 use super::{
     super::{caption, hbox, label, vbox},
-    shell::{SIDE_FILLET, fillet},
+    shell::{FILLET, fillet},
     slide::Slide,
 };
 use gtk::{gio, glib, prelude::*};
@@ -244,12 +244,12 @@ impl Popups {
         list.add_css_class("popup-panel");
         list.set_overflow(gtk::Overflow::Hidden);
         list.set_width_request(400);
-        list.set_margin_top(SIDE_FILLET);
-        list.set_margin_start(SIDE_FILLET);
+        list.set_margin_top(FILLET);
+        list.set_margin_start(FILLET);
         let shape = gtk::Overlay::new();
         shape.set_child(Some(&list));
-        shape.add_overlay(&fillet(Edge::Right, false, SIDE_FILLET));
-        let corner = fillet(Edge::Bottom, false, SIDE_FILLET);
+        shape.add_overlay(&fillet(Edge::Right, false, FILLET));
+        let corner = fillet(Edge::Bottom, false, FILLET);
         corner.set_halign(gtk::Align::Start);
         shape.add_overlay(&corner);
         window.set_child(Some(&shape));
