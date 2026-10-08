@@ -505,7 +505,7 @@ impl Popups {
     }
 }
 
-/// History of the notifications still live, in a drawer out of the right edge.
+/// History of the notifications still live, in a panel out of the bottom-right corner.
 pub struct Center {
     pub widget: gtk::Box,
     /// Do not disturb.
@@ -542,13 +542,13 @@ impl Center {
         let list = vbox(8);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
+            .propagate_natural_height(true)
+            .max_content_height(560)
             .child(&list)
             .build();
         widget.append(&scroll);
         let empty = label("No notifications", "empty-state");
         empty.set_xalign(0.5);
-        empty.set_vexpand(true);
         widget.append(&empty);
         let foot = hbox(10);
         let count = caption("");
