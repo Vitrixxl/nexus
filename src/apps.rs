@@ -1,5 +1,5 @@
-//! Colours for applications that do not follow the GTK theme: foot, Neovim
-//! and Discord clients (Equibop, Vesktop). They get the Nexus surfaces, the
+//! Colours for applications that do not follow the GTK theme: foot, Neovim,
+//! btop and Discord clients (Equibop, Vesktop). They get the Nexus surfaces, the
 //! wallpaper accent, and for terminals an ANSI palette tuned for each mode.
 use crate::theme::{self, GENERATED, Palette, Settings};
 use anyhow::Result;
@@ -101,6 +101,52 @@ fn nvim_colors(s: &Settings) -> String {
         include_str!("../assets/nvim-colors.lua")
     )
 }
+/// btop's `nexus` theme for the current mode: Nexus surfaces, the accent for
+/// highlights, and gradients from the terminal palette.
+fn btop_theme(s: &Settings) -> String {
+    let p = Palette::new(&s.accent, s.dark());
+    let ansi = ansi(p.dark);
+    let hex = theme::hex;
+    let border = hex(theme::mix(p.bg, p.fg, 0.16));
+    let accent = hex(p.accent_fg);
+    let (red, green, yellow, blue, magenta, cyan) =
+        (ansi[1], ansi[2], ansi[3], ansi[4], ansi[5], ansi[6]);
+    let gradient = |name: &str, [start, mid, end]: [&str; 3]| {
+        format!(
+            "theme[{name}_start]=\"{start}\"\ntheme[{name}_mid]=\"{mid}\"\ntheme[{name}_end]=\"{end}\"\n"
+        )
+    };
+    let mut out = format!("# {GENERATED}\n");
+    for (key, value) in [
+        ("main_bg", hex(p.bg)),
+        ("main_fg", hex(p.fg)),
+        ("title", hex(p.fg)),
+        ("hi_fg", accent.clone()),
+        ("selected_bg", hex(theme::mix(p.bg, p.accent, 0.3))),
+        ("selected_fg", hex(p.fg)),
+        ("inactive_fg", hex(theme::mix(p.bg, p.fg, 0.32))),
+        ("graph_text", hex(p.muted)),
+        ("meter_bg", hex(theme::mix(p.bg, p.fg, 0.1))),
+        ("proc_misc", accent.clone()),
+        ("cpu_box", border.clone()),
+        ("mem_box", border.clone()),
+        ("net_box", border.clone()),
+        ("proc_box", border.clone()),
+        ("div_line", border),
+    ] {
+        out += &format!("theme[{key}]=\"{value}\"\n");
+    }
+    out += &gradient("temp", [green, yellow, red]);
+    out += &gradient("cpu", [&accent, yellow, red]);
+    out += &gradient("free", [green, green, green]);
+    out += &gradient("cached", [blue, blue, blue]);
+    out += &gradient("available", [cyan, cyan, cyan]);
+    out += &gradient("used", [yellow, red, red]);
+    out += &gradient("download", [&accent, blue, cyan]);
+    out += &gradient("upload", [magenta, magenta, red]);
+    out += &gradient("process", [&accent, yellow, red]);
+    out
+}
 fn foot_path() -> PathBuf {
     theme::config_dir().join("foot.ini")
 }
@@ -163,6 +209,17 @@ fn discord_paths() -> Vec<PathBuf> {
 pub fn write(s: &Settings) -> Result<()> {
     theme::write_atomic(&foot_path(), foot_ini(s))?;
     theme::write_atomic(&nvim_path(), nvim_colors(s))?;
+    // Chosen with color_theme = "nexus" in btop.conf; running btops reload
+    // their configuration, theme included, on SIGUSR2.
+    let btop = theme::config_home().join("btop");
+    if btop.is_dir() {
+        let path = btop.join("themes/nexus.theme");
+        let text = btop_theme(s);
+        if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+            theme::write_atomic(&path, text)?;
+            theme::pkill_own(Some("-USR2"), "btop");
+        }
+    }
     let css = discord_css(s);
     for path in discord_paths() {
         // The user's own QuickCSS stays around the block; the @import must lead.
@@ -192,6 +249,13 @@ mod tests {
         assert!(ini.contains("[colors-light]\nbackground=f3f4f0\n"));
         assert_eq!(ini.matches("bright7=").count(), 2);
         assert!(!ini.contains("=#"));
+    }
+    #[test]
+    fn btop_theme_is_complete() {
+        let theme = btop_theme(&Settings::default());
+        assert!(theme.contains("theme[main_bg]=\"#151a18\"\n"));
+        assert_eq!(theme.matches("_start]=").count(), 9);
+        assert!(!theme.contains("=\"\""));
     }
     #[test]
     fn discord_import_comes_first() {
