@@ -94,6 +94,7 @@ When adw-gtk3 is installed (system-wide or in `~/.local/share/themes`), Nexus ge
 
 - **foot**: `~/.config/nexus/foot.ini` with `[colors-dark]` and `[colors-light]`; add `include=~/.config/nexus/foot.ini` to `foot.ini`. Open windows switch mode live (SIGUSR1/SIGUSR2); accent changes apply to new windows.
 - **Neovim**: the `nexus` colorscheme in `~/.local/share/nvim/site/colors/nexus.lua`. Reload it when the file changes, e.g. with a `vim.uv.new_fs_event()` watcher on that directory.
+- **T3 Code**: the `nexus` theme in `~/.t3/userdata/themes/nexus.json`, written when that directory exists: the background and accent T3 Code derives its palette from. Choose it once with `t3 theme set nexus`; it repaints whenever the file changes.
 - **btop**: the `nexus` theme in `~/.config/btop/themes/nexus.theme`, written when `~/.config/btop` exists; set `color_theme = "nexus"` in `btop.conf`. Running btops reload it on SIGUSR2, which Nexus sends when it changes.
 - **Equibop / Vesktop**: a marked block at the top of their QuickCSS, overriding the colour variables of the [midnight](https://github.com/refact0r/midnight-discord) theme it imports. The clients reload QuickCSS live.
 

@@ -1,5 +1,5 @@
 //! Colours for applications that do not follow the GTK theme: foot, Neovim,
-//! btop and Discord clients (Equibop, Vesktop). They get the Nexus surfaces, the
+//! btop, T3 Code and Discord clients (Equibop, Vesktop). They get the Nexus surfaces, the
 //! wallpaper accent, and for terminals an ANSI palette tuned for each mode.
 use crate::theme::{self, GENERATED, Palette, Settings};
 use anyhow::Result;
@@ -147,6 +147,18 @@ fn btop_theme(s: &Settings) -> String {
     out += &gradient("process", [&accent, yellow, red]);
     out
 }
+/// T3 Code's `nexus` theme: the seeds it derives its own palette from, as its
+/// guided theme editor does.
+fn t3_theme(s: &Settings) -> String {
+    let p = Palette::new(&s.accent, s.dark());
+    serde_json::json!({
+        "name": "Nexus",
+        "appearance": mode_name(p.dark),
+        "canvas": theme::hex(p.bg),
+        "accent": theme::hex(p.accent),
+    })
+    .to_string()
+}
 fn foot_path() -> PathBuf {
     theme::config_dir().join("foot.ini")
 }
@@ -220,6 +232,12 @@ pub fn write(s: &Settings) -> Result<()> {
             theme::pkill_own(Some("-USR2"), "btop");
         }
     }
+    // T3 Code watches the themes its environment publishes there, and repaints
+    // with the one chosen (`t3 theme set nexus`) as soon as it changes.
+    let t3 = PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".t3/userdata");
+    if t3.is_dir() {
+        theme::write_atomic(&t3.join("themes/nexus.json"), t3_theme(s))?;
+    }
     let css = discord_css(s);
     for path in discord_paths() {
         // The user's own QuickCSS stays around the block; the @import must lead.
@@ -256,6 +274,14 @@ mod tests {
         assert!(theme.contains("theme[main_bg]=\"#151a18\"\n"));
         assert_eq!(theme.matches("_start]=").count(), 9);
         assert!(!theme.contains("=\"\""));
+    }
+    #[test]
+    fn t3_theme_seeds_the_palette() {
+        let theme: serde_json::Value =
+            serde_json::from_str(&t3_theme(&Settings::default())).unwrap();
+        assert_eq!(theme["appearance"], "dark");
+        assert_eq!(theme["canvas"], "#151a18");
+        assert!(theme["accent"].as_str().unwrap().starts_with('#'));
     }
     #[test]
     fn discord_import_comes_first() {
