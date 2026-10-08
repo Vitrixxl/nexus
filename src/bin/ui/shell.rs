@@ -25,6 +25,8 @@ struct PanelAnchor {
     button: glib::WeakRef<gtk::Button>,
 }
 const FILLET: i32 = 14;
+/// The drawer's and popups' fillets sweep along the side of the screen too.
+pub const SIDE_FILLET: i32 = 30;
 /// The bar's fillets sweep further along the screen edge than down its sides.
 const BAR_FILLET: i32 = 30;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
@@ -35,19 +37,36 @@ const BAR_INSET: f64 = 0.15;
 /// Room around the panel for its drop shadow; margins are not part of the input
 /// target, so clicks there still reach the dismissing backdrop.
 const SHADOW: i32 = 64;
-/// Concave corner joining a top edge to the side of the surface hanging from it:
-/// the bar from the screen edge, and a dropped panel from the bar, so each flows
-/// out of the edge above instead of meeting it at a right angle. It is `width`
-/// wide plus a solid column laid over the surface's edge, so no seam shows
+/// Concave corner joining a screen or bar edge to the side of the surface
+/// hanging from it: the bar from the screen edge, a dropped panel from the bar,
+/// the drawer and popups from the side and bottom of the screen, so each flows
+/// out of the edge instead of meeting it at a right angle. It runs `length`
+/// along the edge, `after` the surface (right of it, or below it on the right
+/// edge), plus a solid line laid over the surface's side, so no seam shows
 /// between the two at fractional scales.
-fn fillet(right: bool, width: i32) -> gtk::DrawingArea {
+pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.add_css_class("panel-fillet");
-    area.set_content_width(width + 1);
-    area.set_content_height(FILLET);
-    area.set_valign(gtk::Align::Start);
+    if edge == Edge::Right {
+        area.set_content_width(FILLET);
+        area.set_content_height(length + 1);
+        area.set_halign(gtk::Align::End);
+        area.set_valign(if after {
+            gtk::Align::End
+        } else {
+            gtk::Align::Start
+        });
+    } else {
+        area.set_content_width(length + 1);
+        area.set_content_height(FILLET);
+        area.set_valign(if edge == Edge::Bottom {
+            gtk::Align::End
+        } else {
+            gtk::Align::Start
+        });
+    }
     area.set_draw_func(move |area, cr, w, h| {
-        let (w, h) = (f64::from(w), f64::from(h));
+        let (mut w, mut h) = (f64::from(w), f64::from(h));
         let color = area.color();
         cr.set_source_rgba(
             f64::from(color.red()),
@@ -55,8 +74,21 @@ fn fillet(right: bool, width: i32) -> gtk::DrawingArea {
             f64::from(color.blue()),
             f64::from(color.alpha()),
         );
-        // Square minus a quarter ellipse centred on the outer bottom corner.
         use std::f64::consts::{FRAC_PI_2, PI};
+        // Drawn against a top edge, then turned onto the edge it joins.
+        match edge {
+            Edge::Bottom => {
+                cr.translate(0., h);
+                cr.scale(1., -1.);
+            }
+            Edge::Right => {
+                cr.translate(w, 0.);
+                cr.rotate(FRAC_PI_2);
+                (w, h) = (h, w);
+            }
+            _ => {}
+        }
+        // Square minus a quarter ellipse centred on the outer bottom corner.
         let quarter = |cr: &gtk::cairo::Context, x: f64, from: f64, to: f64| {
             cr.save().ok();
             cr.translate(x, h);
@@ -66,7 +98,7 @@ fn fillet(right: bool, width: i32) -> gtk::DrawingArea {
         };
         cr.move_to(0., 0.);
         cr.line_to(w, 0.);
-        if right {
+        if after {
             quarter(cr, w, -FRAC_PI_2, -PI);
             cr.line_to(0., h);
         } else {
@@ -122,7 +154,10 @@ impl Surface {
         body.append(&gutters[1]);
         let panel = gtk::Overlay::new();
         panel.set_child(Some(&body));
-        let fillets = [fillet(false, FILLET), fillet(true, FILLET)];
+        let fillets = [
+            fillet(Edge::Top, false, FILLET),
+            fillet(Edge::Top, true, FILLET),
+        ];
         for (gutter, (corner, align)) in gutters
             .iter()
             .zip(fillets.iter().zip([gtk::Align::Start, gtk::Align::End]))
@@ -321,6 +356,124 @@ impl Surface {
     }
 }
 
+/// A full-height panel sliding out of the right edge of the screen, over a
+/// dimmed backdrop.
+pub struct Drawer {
+    window: gtk::ApplicationWindow,
+    revealer: gtk::Revealer,
+    open: Cell<bool>,
+}
+impl Drawer {
+    pub fn new(app: &gtk::Application, child: &impl IsA<gtk::Widget>) -> Rc<Self> {
+        let window = gtk::ApplicationWindow::builder()
+            .application(app)
+            .title("Nexus drawer")
+            .build();
+        window.add_css_class("nexus");
+        window.add_css_class("drawer");
+        window.init_layer_shell();
+        window.set_namespace(Some("nexus-drawer"));
+        window.set_layer(Layer::Overlay);
+        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+            window.set_anchor(edge, true);
+        }
+        window.set_exclusive_zone(-1);
+        window.set_keyboard_mode(KeyboardMode::None);
+        let overlay = gtk::Overlay::new();
+        let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        backdrop.set_hexpand(true);
+        backdrop.set_vexpand(true);
+        overlay.set_child(Some(&backdrop));
+        let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        panel.add_css_class("drawer-panel");
+        panel.set_margin_top(SIDE_FILLET);
+        panel.set_margin_bottom(SIDE_FILLET);
+        panel.append(child);
+        let shape = gtk::Overlay::new();
+        shape.set_child(Some(&panel));
+        for after in [false, true] {
+            shape.add_overlay(&fillet(Edge::Right, after, SIDE_FILLET));
+        }
+        let revealer = gtk::Revealer::new();
+        revealer.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
+        revealer.set_transition_duration(180);
+        revealer.set_halign(gtk::Align::End);
+        revealer.set_child(Some(&shape));
+        overlay.add_overlay(&revealer);
+        window.set_child(Some(&overlay));
+        let this = Rc::new(Self {
+            window,
+            revealer,
+            open: Cell::new(false),
+        });
+        let weak = Rc::downgrade(&this);
+        this.revealer
+            .connect_child_revealed_notify(move |revealer| {
+                if let Some(s) = weak.upgrade()
+                    && !s.open.get()
+                    && !revealer.is_child_revealed()
+                {
+                    s.window.set_visible(false);
+                }
+            });
+        let weak = Rc::downgrade(&this);
+        let click = gtk::GestureClick::new();
+        click.connect_released(move |_, _, _, _| {
+            if let Some(s) = weak.upgrade() {
+                s.hide();
+            }
+        });
+        backdrop.add_controller(click);
+        let weak = Rc::downgrade(&this);
+        this.window.connect_close_request(move |_| {
+            if let Some(s) = weak.upgrade() {
+                s.hide();
+            }
+            glib::Propagation::Stop
+        });
+        let weak = Rc::downgrade(&this);
+        let key = gtk::EventControllerKey::new();
+        key.set_propagation_phase(gtk::PropagationPhase::Capture);
+        key.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                if let Some(s) = weak.upgrade() {
+                    s.hide();
+                }
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        this.window.add_controller(key);
+        this
+    }
+    pub fn is_open(&self) -> bool {
+        self.open.get()
+    }
+    pub fn show(self: &Rc<Self>, monitor: Option<&gtk::gdk::Monitor>) {
+        if let Some(monitor) = monitor
+            && self.window.monitor().as_ref() != Some(monitor)
+        {
+            self.window.set_visible(false);
+            self.window.set_monitor(Some(monitor));
+        }
+        self.open.set(true);
+        self.window.set_keyboard_mode(KeyboardMode::OnDemand);
+        self.window.present();
+        // Mapped first, so that the panel slides in rather than appearing.
+        let s = self.clone();
+        glib::idle_add_local_once(move || s.revealer.set_reveal_child(s.open.get()));
+    }
+    pub fn hide(&self) {
+        self.open.set(false);
+        self.window.set_keyboard_mode(KeyboardMode::None);
+        self.revealer.set_reveal_child(false);
+        if !self.revealer.is_child_revealed() {
+            self.window.set_visible(false);
+        }
+    }
+}
+
 pub type Open = Rc<dyn Fn(&str, Option<&gtk::gdk::Monitor>)>;
 struct Indicator {
     button: gtk::Button,
@@ -516,7 +669,7 @@ impl Bars {
         let shape = gtk::Overlay::new();
         shape.set_child(Some(&center));
         for (right, align) in [(false, gtk::Align::Start), (true, gtk::Align::End)] {
-            let corner = fillet(right, BAR_FILLET);
+            let corner = fillet(Edge::Top, right, BAR_FILLET);
             corner.set_halign(align);
             shape.add_overlay(&corner);
         }

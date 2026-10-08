@@ -184,7 +184,7 @@ pub fn css(s: &Settings) -> String {
 @define-color nexus_on_accent {on_accent}; @define-color nexus_accent_fg {accent_fg}; @define-color nexus_error {error}; @define-color nexus_danger {danger}; @define-color nexus_shadow {shadow};
 /* Theme switches fade instead of snapping; interactive highlights stay instant below.
    The shell overlay is left out: its dimming would linger after the power chooser. */
-window.nexus:not(.shell-overlay), .nexus .sidebar, .nexus .card, .nexus-bar .bar-body, .panel-fillet, .shell-panel, .nexus label, .nexus image, .nexus .nav-icon {{ transition: background-color 300ms ease, color 300ms ease, border-color 300ms ease; }}
+window.nexus:not(.shell-overlay), .nexus .sidebar, .nexus .card, .nexus-bar .bar-body, .panel-fillet, .shell-panel, .drawer-panel, .popup-panel, .nexus label, .nexus image, .nexus .nav-icon {{ transition: background-color 300ms ease, color 300ms ease, border-color 300ms ease; }}
 window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', 'Inter', sans-serif; font-size: 14px; }}
 .nexus .muted {{ color: @nexus_muted; }}
 .nexus .caption {{ font-size: 12px; }}
@@ -280,8 +280,13 @@ window.prompt-window {{ background: transparent; }}
 .nexus .prompt .title {{ font-size: 20px; }}
 
 window.notification-popups {{ background: transparent; }}
-.notification-popups .notification {{ background: @nexus_bg; border: 1px solid alpha(@nexus_fg, 0.08); border-radius: 16px; padding: 12px 14px 14px; margin: 4px 12px 12px; box-shadow: 0 14px 30px -12px @nexus_shadow, 0 4px 10px -6px alpha(@nexus_shadow, 0.6); }}
-.notification-center {{ padding: 20px 18px 14px; }}
+.notification-popups .popup-panel {{ background: @nexus_bg; border-radius: 22px 0 0 0; }}
+.notification-popups .notification {{ padding: 14px 18px 16px; }}
+.notification-popups revealer + revealer > .notification {{ border-top: 1px solid alpha(@nexus_fg, 0.06); }}
+.notification-popups .notification.critical {{ background: alpha(@nexus_error, 0.08); }}
+window.drawer {{ background: alpha(#05070a, 0.45); }}
+.drawer-panel {{ background: @nexus_bg; border-radius: 22px 0 0 22px; }}
+.notification-center {{ padding: 22px 18px 14px; }}
 .notification-center .center-title {{ font-size: 18px; font-weight: 650; }}
 .notification-center .notification {{ background: @nexus_surface; border: 1px solid alpha(@nexus_fg, {border}); border-radius: 14px; padding: 12px 14px 14px; }}
 .notification-center .empty-state {{ padding: 28px 0; }}

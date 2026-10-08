@@ -1021,16 +1021,32 @@ fn build(
         let _ = &battery_lifetime;
     });
     let center = ui::notifications::Center::new(server.clone());
-    shell
-        .content
-        .add_named(&center.widget, Some("notifications"));
+    let drawer = ui::shell::Drawer::new(app, &center.widget);
     let popups = ui::notifications::Popups::new(app, server.clone());
     let shell2 = shell.clone();
+    let drawer2 = drawer.clone();
     let control2 = control.clone();
     let search = launcher.search.clone();
     let (center2, popups2) = (center.clone(), popups.clone());
     let open: ui::shell::Open = Rc::new(move |page, monitor| {
-        if !["launcher", "power", "notifications", "tray", "battery"].contains(&page) {
+        if page == "notifications" {
+            if shell2.window.is_visible() {
+                shell2.hide();
+            }
+            if drawer2.is_open() {
+                drawer2.hide();
+            } else {
+                // Everything the popups show is in the list now.
+                popups2.clear();
+                center2.refresh();
+                drawer2.show(monitor);
+            }
+            return;
+        }
+        if drawer2.is_open() {
+            drawer2.hide();
+        }
+        if !["launcher", "power", "tray", "battery"].contains(&page) {
             if shell2.window.is_visible() {
                 shell2.hide();
             }
@@ -1044,11 +1060,6 @@ fn build(
         if page == "power" {
             reset_power();
             enter_power();
-        }
-        if page == "notifications" {
-            // Everything the popups show is in the list now.
-            popups2.clear();
-            center2.refresh();
         }
         shell2.show(page, monitor);
         if page == "launcher" {
@@ -1076,10 +1087,10 @@ fn build(
         let _ = &tray_lifetime;
     });
     let sync_notices: Rc<dyn Fn()> = {
-        let (bars, center, server, shell) =
-            (bars.clone(), center.clone(), server.clone(), shell.clone());
+        let (bars, center, server, drawer) =
+            (bars.clone(), center.clone(), server.clone(), drawer.clone());
         Rc::new(move || {
-            if shell.is_open("notifications") {
+            if drawer.is_open() {
                 center.refresh();
             }
             bars.notifications(server.count(), center.quiet.is_active());
@@ -1093,14 +1104,12 @@ fn build(
         });
     }
     {
-        let (popups, shell) = (popups.clone(), shell.clone());
+        let (popups, drawer) = (popups.clone(), drawer.clone());
         glib::spawn_future_local(async move {
             while let Ok(change) = notice_rx.recv().await {
                 match change {
                     // An open list already shows it.
-                    notifications::Change::Posted(n) if !shell.is_open("notifications") => {
-                        popups.show(&n)
-                    }
+                    notifications::Change::Posted(n) if !drawer.is_open() => popups.show(&n),
                     notifications::Change::Closed(id) => popups.hide(id, false),
                     _ => {}
                 }
@@ -1169,12 +1178,14 @@ fn build(
     let command_monitor = focused_monitor.clone();
     let command_open = open.clone();
     let command_shell = shell.clone();
+    let command_drawer = drawer.clone();
     let command_search = launcher.search.clone();
     glib::spawn_future_local(async move {
         while let Ok(message) = page_rx.recv().await {
             let (page, query) = message.split_once('\t').unwrap_or((&message, ""));
             if page == "close" {
                 command_shell.hide();
+                command_drawer.hide();
             } else if page == "screenshot" {
                 match screenshot::Options::parse(query) {
                     Ok(options) => shot.take(options),

@@ -1,4 +1,7 @@
-use super::super::{caption, hbox, label, vbox};
+use super::{
+    super::{caption, hbox, label, vbox},
+    shell::{SIDE_FILLET, fillet},
+};
 use gtk::{gio, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nexus_control::notifications::{Image, Notification, Server, Urgency};
@@ -181,7 +184,8 @@ struct Popup {
     timeout: Cell<Option<Duration>>,
     timer: RefCell<Option<glib::SourceId>>,
 }
-/// Notifications as they arrive, stacked in the top-right corner below the bar.
+/// Notifications as they arrive, rising out of the bottom-right corner of the
+/// screen, the newest against the bottom edge.
 pub struct Popups {
     window: gtk::Window,
     list: gtk::Box,
@@ -202,16 +206,23 @@ impl Popups {
         window.set_namespace(Some("nexus-notifications"));
         window.set_layer(Layer::Overlay);
         window.set_keyboard_mode(KeyboardMode::None);
-        // From the very top of the screen, over the bar and everything else,
-        // rather than pushed down below the bar's exclusive zone.
+        // Flush with the corner, over everything, whatever reserves the edges.
         window.set_exclusive_zone(-1);
-        window.set_anchor(Edge::Top, true);
+        window.set_anchor(Edge::Bottom, true);
         window.set_anchor(Edge::Right, true);
-        window.set_margin(Edge::Top, 6);
-        window.set_margin(Edge::Right, 6);
         let list = vbox(0);
+        list.add_css_class("popup-panel");
+        list.set_overflow(gtk::Overflow::Hidden);
         list.set_width_request(400);
-        window.set_child(Some(&list));
+        list.set_margin_top(SIDE_FILLET);
+        list.set_margin_start(SIDE_FILLET);
+        let shape = gtk::Overlay::new();
+        shape.set_child(Some(&list));
+        shape.add_overlay(&fillet(Edge::Right, false, SIDE_FILLET));
+        let corner = fillet(Edge::Bottom, false, SIDE_FILLET);
+        corner.set_halign(gtk::Align::Start);
+        shape.add_overlay(&corner);
+        window.set_child(Some(&shape));
         Rc::new(Self {
             window,
             list,
@@ -262,7 +273,7 @@ impl Popups {
     }
     fn add(self: &Rc<Self>, id: u32, content: &gtk::Box) -> Rc<Popup> {
         let revealer = gtk::Revealer::new();
-        revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+        revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
         revealer.set_transition_duration(SLIDE);
         revealer.set_child(Some(content));
         let popup = Rc::new(Popup {
@@ -300,7 +311,7 @@ impl Popups {
                 }
             }
         });
-        self.list.prepend(&revealer);
+        self.list.append(&revealer);
         self.shown.borrow_mut().insert(0, popup.clone());
         self.window.set_visible(true);
         glib::idle_add_local_once(move || revealer.set_reveal_child(true));
@@ -350,12 +361,13 @@ impl Popups {
     }
 }
 
-/// History of the notifications still live, dropped from the bar.
+/// History of the notifications still live, in a drawer out of the right edge.
 pub struct Center {
     pub widget: gtk::Box,
     /// Do not disturb.
     pub quiet: gtk::Switch,
     list: gtk::Box,
+    scroll: gtk::ScrolledWindow,
     empty: gtk::Label,
     status: gtk::Label,
     count: gtk::Label,
@@ -386,13 +398,13 @@ impl Center {
         let list = vbox(8);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_height(true)
-            .max_content_height(520)
+            .vexpand(true)
             .child(&list)
             .build();
         widget.append(&scroll);
         let empty = label("No notifications", "empty-state");
         empty.set_xalign(0.5);
+        empty.set_vexpand(true);
         widget.append(&empty);
         let foot = hbox(10);
         let count = caption("");
@@ -409,6 +421,7 @@ impl Center {
             widget,
             quiet,
             list,
+            scroll,
             empty,
             status,
             count,
@@ -424,7 +437,7 @@ impl Center {
         for n in &all {
             self.list.append(&card(n, &self.server, 8, Rc::new(|| {})));
         }
-        self.list.set_visible(!all.is_empty());
+        self.scroll.set_visible(!all.is_empty());
         self.empty.set_visible(all.is_empty());
         self.clear.set_sensitive(!all.is_empty());
         self.count.set_text(&match all.len() {
