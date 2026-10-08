@@ -948,17 +948,7 @@ impl Backend {
                     &["--class=backlight", "set", &format!("{n}%")],
                 )?;
             }
-            "night-light" => {
-                if parse_bool(value)? {
-                    // A daytime profile leaves a near-neutral temperature behind.
-                    if night_light()?.temperature >= 6000 {
-                        sunset(&["temperature", "4000"])?;
-                    }
-                    sunset(&["identity", "false"])?;
-                } else {
-                    sunset(&["identity", "true"])?;
-                }
-            }
+            "night-light" => crate::night::set(parse_bool(value)?, None)?,
             "night-light-temperature" => {
                 let k = value
                     .parse::<u16>()
@@ -969,12 +959,9 @@ impl Backend {
                             "Temperature must be between {NIGHT_LIGHT_MIN} and {NIGHT_LIGHT_MAX} K"
                         )
                     })?;
-                sunset(&["temperature", &k.to_string()])?;
+                crate::night::set(true, Some(k))?;
             }
-            // Back to the profile hyprsunset.conf schedules for the current time.
-            "night-light-schedule" => {
-                sunset(&["reset"])?;
-            }
+            "night-light-schedule" => crate::night::follow_schedule()?,
             "sleep" | "restart" | "shutdown" => {
                 self.proxy(
                     "org.freedesktop.login1",
@@ -1148,24 +1135,6 @@ pub fn hypr_socket(socket: &str, request: &str) -> Result<String> {
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
     Ok(reply.trim().into())
-}
-/// One hyprsunset IPC command.
-fn sunset(args: &[&str]) -> Result<String> {
-    let reply = hypr_socket(".hyprsunset.sock", &args.join(" "))
-        .map_err(|_| anyhow::anyhow!("hyprsunset is not running"))?;
-    if reply.starts_with("Invalid") || reply == "invalid command" || reply.starts_with("No profile")
-    {
-        bail!("hyprsunset: {reply}");
-    }
-    Ok(reply)
-}
-pub fn night_light() -> Result<NightLight> {
-    Ok(NightLight {
-        enabled: sunset(&["identity", "get"])? == "false",
-        temperature: sunset(&["temperature"])?
-            .parse()
-            .context("Unexpected hyprsunset temperature")?,
-    })
 }
 #[cfg(test)]
 mod tests {

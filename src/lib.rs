@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod backend;
 pub mod launcher;
+pub mod night;
 pub mod notifications;
 pub mod power;
 pub mod theme;
@@ -68,7 +69,7 @@ pub struct Prompt {
     pub fields: Vec<String>,
     pub display_only: bool,
 }
-/// hyprsunset blue-light filter: whether it tints the screen, and how warm.
+/// Blue-light filter: whether it tints the screen, and how warm.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct NightLight {
     pub enabled: bool,

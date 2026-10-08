@@ -722,7 +722,7 @@ fn build(
     let night_schedule = button("Use schedule");
     night_schedule.add_css_class("flat");
     night_schedule.set_valign(gtk::Align::Center);
-    night_schedule.set_tooltip_text(Some("Follow the times in hyprsunset.conf"));
+    night_schedule.set_tooltip_text(Some("Back to the schedule: on from 21:00 to 7:30"));
     ui.bind(&night_schedule, action("night-light-schedule", "", ""));
     night_head.append(&night_schedule);
     let night_toggle = toggle(&ui, "night-light");

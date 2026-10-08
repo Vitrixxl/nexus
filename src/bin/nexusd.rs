@@ -314,10 +314,10 @@ fn poll_audio(state: &Mutex<Snapshot>) {
         s.mic_muted = m;
     }
 }
-/// Brightness and night light: a sysfs read and a socket request.
+/// Brightness and night light: a sysfs read, and the night light schedule.
 fn poll_light(state: &Mutex<Snapshot>) {
     let light = backend::brightness();
-    let night_light = backend::night_light();
+    let night_light = night::get();
     let mut s = state.lock().unwrap();
     match light {
         Ok(v) => {
