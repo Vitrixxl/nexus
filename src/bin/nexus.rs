@@ -41,6 +41,22 @@ fn main() -> anyhow::Result<()> {
         // SAFETY: no other thread exists yet.
         unsafe { std::env::set_var("GSK_RENDERER", "gl") };
     }
+    // Even with the GL renderer, GDK creates a Vulkan device to list dmabuf
+    // formats, and glvnd tries NVIDIA's EGL before Mesa's: each wakes a
+    // sleeping discrete GPU, seconds the lock (a new process every time)
+    // spent before showing.
+    if std::env::var_os("GDK_DISABLE").is_none() {
+        // SAFETY: no other thread exists yet.
+        unsafe { std::env::set_var("GDK_DISABLE", "vulkan") };
+    }
+    const MESA_EGL: &str = "/usr/share/glvnd/egl_vendor.d/50_mesa.json";
+    if std::env::var_os("__EGL_VENDOR_LIBRARY_FILENAMES").is_none()
+        && std::path::Path::new(MESA_EGL).exists()
+        && !nvidia_drives_display()
+    {
+        // SAFETY: no other thread exists yet.
+        unsafe { std::env::set_var("__EGL_VENDOR_LIBRARY_FILENAMES", MESA_EGL) };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
@@ -165,6 +181,17 @@ fn caption(text: &str) -> gtk::Label {
     l
 }
 /// Applies the theme's stylesheet and light or dark preference to `display`.
+/// Whether the GPU the firmware booted on, which drives the screen, is NVIDIA's.
+fn nvidia_drives_display() -> bool {
+    let Ok(cards) = std::fs::read_dir("/sys/class/drm") else {
+        return false;
+    };
+    cards.flatten().any(|card| {
+        let device = card.path().join("device");
+        let read = |name| std::fs::read_to_string(device.join(name)).unwrap_or_default();
+        read("boot_vga").trim() == "1" && read("vendor").trim() == "0x10de"
+    })
+}
 fn install_theme(display: &gtk::gdk::Display, settings: &theme::Settings) -> gtk::CssProvider {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(&theme::css(settings));
