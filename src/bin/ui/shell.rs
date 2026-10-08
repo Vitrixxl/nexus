@@ -1,7 +1,7 @@
 use super::super::{hbox, label, signal_icon};
 use gtk::{glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
-use nexus_control::Snapshot;
+use nexus_control::{Request, Snapshot, request};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -515,10 +515,36 @@ pub struct Bars {
     tray_count: Cell<usize>,
     /// When the screen recording in progress started.
     recording: Cell<Option<Instant>>,
+    /// Volume and brightness as last known, and when the wheel last set them.
+    levels: Cell<[(Option<u8>, Option<Instant>); 2]>,
+    setters: [std::sync::mpsc::Sender<u8>; 2],
+    this: std::rc::Weak<Self>,
 }
+/// The daemon setting `op`, one value at a time: a burst of wheel steps sends
+/// only the last one, rather than queueing up behind each other.
+fn setter(op: &'static str) -> std::sync::mpsc::Sender<u8> {
+    let (tx, rx) = std::sync::mpsc::channel::<u8>();
+    std::thread::spawn(move || {
+        while let Ok(mut value) = rx.recv() {
+            while let Ok(newer) = rx.try_recv() {
+                value = newer;
+            }
+            let _ = request(&Request::Action {
+                op: op.into(),
+                target: String::new(),
+                value: value.to_string(),
+            });
+        }
+    });
+    tx
+}
+/// How long a wheel change outweighs the state read before it.
+const WHEEL_HOLD: Duration = Duration::from_millis(1500);
+const VOLUME: usize = 0;
+const BRIGHTNESS: usize = 1;
 impl Bars {
     pub fn new(app: &gtk::Application, open: Open, surface: Rc<Surface>) -> Rc<Self> {
-        let this = Rc::new(Self {
+        let this = Rc::new_cyclic(|this| Self {
             app: app.clone(),
             bars: RefCell::new(vec![]),
             open,
@@ -526,6 +552,9 @@ impl Bars {
             notices: Cell::new((0, false)),
             tray_count: Cell::new(0),
             recording: Cell::new(None),
+            levels: Cell::new([(None, None); 2]),
+            setters: [setter("volume"), setter("brightness")],
+            this: this.clone(),
         });
         this.sync();
         let weak = Rc::downgrade(&this);
@@ -653,6 +682,20 @@ impl Bars {
         );
         let battery = self.indicator(monitor, "battery-symbolic", "Battery", "battery");
         self.surface.anchor("battery", monitor, &battery.button);
+        for (which, indicator) in [(VOLUME, &sound), (BRIGHTNESS, &brightness)] {
+            let scroll = gtk::EventControllerScroll::new(
+                gtk::EventControllerScrollFlags::VERTICAL
+                    | gtk::EventControllerScrollFlags::DISCRETE,
+            );
+            let bars = self.this.clone();
+            scroll.connect_scroll(move |_, _, dy| {
+                if let Some(bars) = bars.upgrade() {
+                    bars.wheel(which, dy);
+                }
+                glib::Propagation::Stop
+            });
+            indicator.button.add_controller(scroll);
+        }
         let power = self.indicator(
             monitor,
             "system-shutdown-symbolic",
@@ -764,6 +807,36 @@ impl Bars {
             });
         }
     }
+    /// One wheel step over the sound or brightness button: 5% up or down.
+    fn wheel(&self, which: usize, dy: f64) {
+        let mut levels = self.levels.get();
+        let Some(current) = levels[which].0 else {
+            return;
+        };
+        let floor = if which == BRIGHTNESS { 1 } else { 0 };
+        let step = if dy < 0. { 5 } else { -5 };
+        let next = (i16::from(current) + step).clamp(floor, 100) as u8;
+        levels[which] = (Some(next), Some(Instant::now()));
+        self.levels.set(levels);
+        let _ = self.setters[which].send(next);
+        for bar in self.bars.borrow().iter() {
+            let indicator = if which == VOLUME {
+                &bar.sound
+            } else {
+                &bar.brightness
+            };
+            indicator.value.set_text(&format!("{next}%"));
+        }
+    }
+    /// `read` from the daemon, unless the wheel changed it just before.
+    fn level(&self, which: usize, read: Option<u8>) -> Option<u8> {
+        let mut levels = self.levels.get();
+        if levels[which].1.is_none_or(|t| t.elapsed() > WHEEL_HOLD) {
+            levels[which] = (read, None);
+            self.levels.set(levels);
+        }
+        levels[which].0
+    }
     pub fn tray(&self, count: usize) {
         self.tray_count.set(count);
         for bar in self.bars.borrow().iter() {
@@ -793,6 +866,10 @@ impl Bars {
             })
             .unwrap_or_default();
         let battery = battery();
+        let (volume, brightness) = (
+            self.level(VOLUME, s.volume),
+            self.level(BRIGHTNESS, s.brightness),
+        );
         for bar in self.bars.borrow().iter() {
             bar.clock.set_text(&time);
             let network = s.networks.iter().find(|n| n.connected());
@@ -824,28 +901,28 @@ impl Bars {
                 .set_tooltip_text(Some(&format!("Bluetooth · {connected} connected devices")));
             bar.sound
                 .icon
-                .set_icon_name(Some(if s.muted || s.volume == Some(0) {
+                .set_icon_name(Some(if s.muted || volume == Some(0) {
                     "audio-volume-muted-symbolic"
-                } else if s.volume.unwrap_or(0) < 35 {
+                } else if volume.unwrap_or(0) < 35 {
                     "audio-volume-low-symbolic"
-                } else if s.volume.unwrap_or(0) < 70 {
+                } else if volume.unwrap_or(0) < 70 {
                     "audio-volume-medium-symbolic"
                 } else {
                     "audio-volume-high-symbolic"
                 }));
-            bar.sound.value.set_visible(!s.muted && s.volume.is_some());
+            bar.sound.value.set_visible(!s.muted && volume.is_some());
             bar.sound
                 .value
-                .set_text(&s.volume.map(|v| format!("{v}%")).unwrap_or_default());
+                .set_text(&volume.map(|v| format!("{v}%")).unwrap_or_default());
             bar.sound.button.set_tooltip_text(Some(if s.muted {
                 "Sound · Muted"
             } else {
                 "Sound settings"
             }));
-            bar.brightness.value.set_visible(s.brightness.is_some());
+            bar.brightness.value.set_visible(brightness.is_some());
             bar.brightness
                 .value
-                .set_text(&s.brightness.map(|v| format!("{v}%")).unwrap_or_default());
+                .set_text(&brightness.map(|v| format!("{v}%")).unwrap_or_default());
             bar.battery.button.set_visible(battery.is_some());
             if let Some((capacity, charging)) = battery {
                 bar.battery.icon.set_icon_name(Some(&format!(
