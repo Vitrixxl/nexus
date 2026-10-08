@@ -349,8 +349,11 @@ window.nexus.nexus-bar {{ background: transparent; }}
 .monitor .monitor-graph {{ color: @nexus_accent_fg; }}
 .monitor .monitor-bar > trough {{ background: alpha(@nexus_fg, 0.12); border: none; border-radius: 999px; min-height: 6px; }}
 .monitor .monitor-bar > trough > progress {{ background: @nexus_accent; border: none; border-radius: 999px; min-height: 6px; }}
-.monitor .monitor-columns button {{ padding: 2px 8px; min-height: 0; font-size: 11px; font-weight: 600; color: @nexus_muted; background: transparent; }}
-.monitor .monitor-columns button:hover {{ color: @nexus_fg; }}
+.monitor .monitor-search {{ padding: 4px 10px; min-height: 0; }}
+.monitor button.monitor-end {{ padding: 5px 14px; min-height: 0; font-size: 13px; }}
+.monitor .monitor-columns button {{ padding: 5px 8px; min-height: 0; font-size: 12px; font-weight: 600; color: @nexus_muted; background: transparent; border: none; border-radius: 8px; outline: none; box-shadow: none; }}
+.monitor .monitor-columns button:hover {{ color: @nexus_fg; background: alpha(@nexus_fg, 0.06); }}
+.monitor .monitor-columns button.active {{ color: @nexus_accent_fg; background: alpha(@nexus_accent, 0.16); }}
 .monitor .monitor-list {{ background: transparent; }}
 .monitor .monitor-list row {{ padding: 4px 8px; border-radius: 8px; font-size: 13px; font-feature-settings: "tnum"; }}
 .monitor .monitor-list row:hover {{ background: alpha(@nexus_fg, 0.05); }}

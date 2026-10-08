@@ -67,6 +67,8 @@ fn graph(class: &str, mirrored: bool, fixed: bool) -> (gtk::DrawingArea, Rc<RefC
     area.add_css_class(class);
     area.set_content_height(72);
     area.set_hexpand(true);
+    // Graphs take what their card has to spare.
+    area.set_vexpand(true);
     let history = Rc::new(RefCell::new(History::default()));
     let h = history.clone();
     area.set_draw_func(move |area, cr, w, height| {
@@ -164,6 +166,7 @@ fn card(title: &str, body: &[&gtk::Widget]) -> (gtk::Box, gtk::Label, gtk::Label
     let card = vbox(8);
     card.add_css_class("card");
     card.set_hexpand(true);
+    card.set_vexpand(true);
     card.append(&text(title, "eyebrow"));
     let value = text("—", "monitor-value");
     card.append(&value);
@@ -213,7 +216,6 @@ struct State {
     selected: Cell<Option<i32>>,
     rows: Vec<Row>,
     list: gtk::ListBox,
-    count: gtk::Label,
     headers: Vec<(Sort, gtk::Button, &'static str)>,
 }
 impl State {
@@ -241,8 +243,6 @@ impl State {
             let order = if descending { order.reverse() } else { order };
             order.then(a.pid.cmp(&b.pid))
         });
-        self.count
-            .set_text(&format!("{} processes", sample.procs.len()));
         let selected = self.selected.get();
         let mut still = None;
         for (i, row) in self.rows.iter().enumerate() {
@@ -274,6 +274,11 @@ impl State {
                 (true, false) => " ↑",
             };
             button.set_label(&format!("{title}{arrow}"));
+            if *s == sort {
+                button.add_css_class("active");
+            } else {
+                button.remove_css_class("active");
+            }
         }
     }
     fn end(&self, force: bool) {
@@ -308,28 +313,25 @@ pub fn page() -> gtk::Box {
     cards.set_row_spacing(14);
     cards.set_column_spacing(14);
     cards.set_column_homogeneous(true);
+    cards.set_row_homogeneous(true);
     for (i, c) in [&cpu_card, &memory_card, &net_card, &disk_card]
         .iter()
         .enumerate()
     {
         cards.attach(*c, i as i32 % 2, i as i32 / 2, 1, 1);
     }
-    root.append(&cards);
 
     let procs = vbox(10);
     procs.add_css_class("card");
     procs.set_vexpand(true);
     let head = hbox(10);
-    head.append(&text("PROCESSES", "eyebrow"));
-    let count = text("", "muted");
-    count.add_css_class("caption");
-    count.set_hexpand(true);
-    head.append(&count);
     let search = gtk::SearchEntry::new();
+    search.add_css_class("monitor-search");
     search.set_placeholder_text(Some("Filter by name or PID"));
-    search.set_width_chars(28);
+    search.set_hexpand(true);
     head.append(&search);
     let end = gtk::Button::with_label("End process");
+    end.add_css_class("monitor-end");
     end.add_css_class("destructive-action");
     end.set_sensitive(false);
     end.set_tooltip_text(Some("Delete; Shift+Delete forces it"));
@@ -347,7 +349,7 @@ pub fn page() -> gtk::Box {
         (&h_threads, Sort::Threads, "Threads"),
     ] {
         let button = gtk::Button::with_label(title);
-        button.add_css_class("flat");
+        button.set_tooltip_text(Some("Sort by this column"));
         button.set_hexpand(label.hexpands());
         if let Some(child) = button.child().and_downcast::<gtk::Label>() {
             child.set_width_chars(label.width_chars());
@@ -356,10 +358,13 @@ pub fn page() -> gtk::Box {
         header.append(&button);
         headers.push((sort, button, title));
     }
+    // Room on the right for the scrollbar, which would cover the last column.
+    header.set_margin_end(14);
     procs.append(&header);
     let list = gtk::ListBox::new();
     list.add_css_class("monitor-list");
     list.set_selection_mode(gtk::SelectionMode::Single);
+    list.set_margin_end(14);
     let rows: Vec<Row> = (0..ROWS)
         .map(|_| {
             let [pid, name, cpu, memory, threads] = columns();
@@ -388,7 +393,31 @@ pub fn page() -> gtk::Box {
         .child(&list)
         .build();
     procs.append(&scroll);
-    root.append(&procs);
+    // Resources and processes each take the whole page, one at a time.
+    let tabs = gtk::Stack::new();
+    tabs.set_transition_type(gtk::StackTransitionType::Crossfade);
+    tabs.set_transition_duration(150);
+    tabs.set_vexpand(true);
+    tabs.add_named(&cards, Some("resources"));
+    tabs.add_named(&procs, Some("processes"));
+    let switch = hbox(0);
+    switch.add_css_class("segmented");
+    switch.set_halign(gtk::Align::Start);
+    let resources = gtk::ToggleButton::with_label("Resources");
+    let processes = gtk::ToggleButton::with_label("Processes");
+    processes.set_group(Some(&resources));
+    resources.set_active(true);
+    for (button, name) in [(&resources, "resources"), (&processes, "processes")] {
+        let tabs = tabs.clone();
+        button.connect_toggled(move |b| {
+            if b.is_active() {
+                tabs.set_visible_child_name(name);
+            }
+        });
+        switch.append(button);
+    }
+    root.append(&switch);
+    root.append(&tabs);
 
     let state = Rc::new(State {
         sample: RefCell::default(),
@@ -397,7 +426,6 @@ pub fn page() -> gtk::Box {
         selected: Cell::new(None),
         rows,
         list: list.clone(),
-        count,
         headers,
     });
     for (sort, button, _) in &state.headers {

@@ -264,12 +264,19 @@ fn busy_text(op: &str) -> &'static str {
         _ => "Connecting…",
     }
 }
+/// A spinner that turns only while it is on screen. Spinning, it redraws its
+/// window every frame, even from a page of the control center that is not
+/// shown: a scan in the background kept the whole window repainting.
+fn spinner() -> gtk::Spinner {
+    let spinner = gtk::Spinner::new();
+    spinner.connect_map(|s| s.start());
+    spinner.connect_unmap(|s| s.stop());
+    spinner
+}
 /// Replaces the button's label with `text` and a spinner, and disables it.
 fn set_busy(b: &gtk::Button, text: &str) {
     let content = hbox(6);
-    let spinner = gtk::Spinner::new();
-    spinner.start();
-    content.append(&spinner);
+    content.append(&spinner());
     content.append(&gtk::Label::new(Some(text)));
     b.set_child(Some(&content));
     b.set_sensitive(false);
@@ -398,16 +405,14 @@ fn radio_heading(
 fn scan_indicator() -> gtk::Box {
     let b = hbox(6);
     b.set_valign(gtk::Align::Center);
-    b.append(&gtk::Spinner::new());
+    // Shown only while scanning, so spinning whenever it is mapped.
+    b.append(&spinner());
     b.append(&caption("Scanning…"));
     b.set_visible(false);
     b
 }
 fn set_scanning(indicator: &gtk::Box, scanning: bool) {
     indicator.set_visible(scanning);
-    if let Some(spinner) = indicator.first_child().and_downcast::<gtk::Spinner>() {
-        spinner.set_spinning(scanning);
-    }
 }
 /// Card with an icon, a title and a one-line status, followed by trailing widgets.
 fn row_card(icon: &str, title: &str) -> (gtk::Box, gtk::Label) {
