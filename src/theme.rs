@@ -262,7 +262,9 @@ window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', '
 
 window.shell-overlay {{ background: transparent; }}
 .panel-fillet {{ color: @nexus_bg; }}
-window.power-overlay {{ background: alpha(#080d0a, 0.72); }}
+window.power-overlay {{ background: alpha(#080d0a, 0.72); transition: background-color 220ms ease; }}
+window.power-overlay.leaving {{ background: transparent; }}
+window.power-overlay.leaving .power-page > .card, window.power-overlay.leaving .power-page > label {{ opacity: 0; transition: opacity 160ms ease; }}
 .shell-panel {{ background: @nexus_bg; border-radius: 0 0 22px 22px; border: none; box-shadow: 0 24px 44px -12px @nexus_shadow, 0 8px 16px -8px alpha(@nexus_shadow, 0.65); }}
 .power-overlay .shell-panel {{ background: transparent; border: none; box-shadow: none; }}
 .nexus .power-page {{ padding: 24px; }}
@@ -388,6 +390,12 @@ fn power_entrances() -> String {
                  .nexus button.power-tile.from-{side}.enter-{copy} {{ animation: power-{side}-{copy} 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }}\n"
             );
         }
+        // Back the way they came, quicker, as the overlay fades.
+        let away = offset * 2 / 3;
+        css += &format!(
+            "@keyframes power-{side}-out {{ from {{ opacity: 1; transform: translate{axis}(0); }} to {{ opacity: 0; transform: translate{axis}({away}px); }} }}\n\
+             window.power-overlay.leaving button.power-tile.from-{side} {{ animation: power-{side}-out 220ms cubic-bezier(0.55, 0, 1, 0.45) both; }}\n"
+        );
     }
     css
 }

@@ -35,6 +35,8 @@ const BAR_INSET: f64 = 0.15;
 /// Room around the panel for its drop shadow; margins are not part of the input
 /// target, so clicks there still reach the dismissing backdrop.
 const SHADOW: i32 = 64;
+/// Matches the power tiles' leaving animations in the theme.
+const POWER_LEAVE: Duration = Duration::from_millis(220);
 /// Concave corner joining a screen or bar edge to the side of the surface
 /// hanging from it: the bar from the screen edge, a dropped panel from the bar,
 /// the corner panels from the side and bottom of the screen, so each flows
@@ -240,11 +242,25 @@ impl Surface {
         self.window.is_visible() && self.page.borrow().as_str() == page
     }
     /// Folds the panel back up under the bar, then hides the window. The power
-    /// chooser, and a panel still sliding in, close at once.
+    /// tiles fly back out first; a panel still sliding in closes at once.
     pub fn hide(self: &Rc<Self>) {
         self.window.set_keyboard_mode(KeyboardMode::None);
         self.page.borrow_mut().clear();
-        if self.window.has_css_class("power-overlay") || !self.revealer.is_child_revealed() {
+        let power = self.window.has_css_class("power-overlay");
+        if power && self.window.is_visible() && !self.window.has_css_class("leaving") {
+            self.closing.set(true);
+            self.window.add_css_class("leaving");
+            let s = self.clone();
+            glib::timeout_add_local_once(POWER_LEAVE, move || {
+                // Unless it opened again meanwhile; still leaving, it now hides.
+                if s.closing.get() {
+                    s.hide();
+                }
+            });
+            return;
+        }
+        self.window.remove_css_class("leaving");
+        if power || !self.revealer.is_child_revealed() {
             self.closing.set(false);
             self.window.set_visible(false);
             // Collapse without animation so the next open slides in again.
@@ -267,6 +283,7 @@ impl Surface {
         }
         *self.page.borrow_mut() = page.into();
         self.closing.set(false);
+        self.window.remove_css_class("leaving");
         let power = page == "power";
         self.clip.set_halign(gtk::Align::Center);
         self.clip.set_margin_start(0);
