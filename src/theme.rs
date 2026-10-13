@@ -286,7 +286,8 @@ window.notification-popups {{ background: transparent; }}
 .notification-popups .notification {{ padding: 14px 18px 16px; }}
 .notification-popups revealer + revealer > .notification {{ border-top: 1px solid alpha(@nexus_fg, 0.06); }}
 .notification-popups .notification.critical {{ background: alpha(@nexus_error, 0.08); }}
-window.drawer {{ background: alpha(#05070a, 0.45); }}
+window.drawer {{ background: transparent; }}
+.drawer-dim {{ background: alpha(#05070a, 0.45); border-radius: 22px; }}
 .drawer-panel {{ background: @nexus_bg; border-radius: 22px 0 0 0; }}
 .notification-center {{ padding: 22px 18px 14px; }}
 .notification-center .center-title {{ font-size: 18px; font-weight: 650; }}

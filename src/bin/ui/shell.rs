@@ -463,6 +463,15 @@ impl Drawer {
         let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
         backdrop.set_hexpand(true);
         backdrop.set_vexpand(true);
+        // Dims what the frame holds, not the frame the panel joins.
+        let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        dim.add_css_class("drawer-dim");
+        dim.set_vexpand(true);
+        dim.set_margin_top(BAR_BOTTOM + 1);
+        dim.set_margin_start(FRAME);
+        dim.set_margin_end(FRAME);
+        dim.set_margin_bottom(FRAME);
+        backdrop.append(&dim);
         overlay.set_child(Some(&backdrop));
         let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         panel.add_css_class("drawer-panel");
