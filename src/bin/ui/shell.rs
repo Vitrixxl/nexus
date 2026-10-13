@@ -159,7 +159,7 @@ fn frame(app: &gtk::Application, monitor: &gtk::gdk::Monitor) -> [gtk::Applicati
                 }
                 let (left, top, bottom) = (
                     f64::from(FRAME),
-                    f64::from(BAR_BOTTOM),
+                    f64::from(BAR_BOTTOM + 1),
                     h - f64::from(FRAME),
                 );
                 let r = f64::from(FILLET);
