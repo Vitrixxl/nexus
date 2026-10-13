@@ -1,6 +1,6 @@
 use super::{
     super::{caption, hbox, label, vbox},
-    shell::{FILLET, fillet},
+    shell::{FILLET, FRAME, fillet},
     slide::Slide,
 };
 use gtk::{gio, glib, prelude::*};
@@ -237,10 +237,12 @@ impl Popups {
         window.set_namespace(Some("nexus-notifications"));
         window.set_layer(Layer::Overlay);
         window.set_keyboard_mode(KeyboardMode::None);
-        // Flush with the corner, over everything, whatever reserves the edges.
+        // Into the frame's corner, over everything, whatever reserves the edges.
         window.set_exclusive_zone(-1);
         window.set_anchor(Edge::Bottom, true);
         window.set_anchor(Edge::Right, true);
+        window.set_margin(Edge::Bottom, FRAME);
+        window.set_margin(Edge::Right, FRAME);
         let list = vbox(0);
         list.add_css_class("popup-panel");
         list.set_overflow(gtk::Overflow::Hidden);

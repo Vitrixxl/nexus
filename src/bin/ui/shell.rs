@@ -29,6 +29,8 @@ pub const FILLET: i32 = 22;
 /// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
 /// so the panel joins it.
 const BAR_BOTTOM: i32 = 33;
+/// Width of the frame the bar runs into, down the sides and along the bottom.
+pub const FRAME: i32 = 8;
 /// Room around the panel for its drop shadow; margins are not part of the input
 /// target, so clicks there still reach the dismissing backdrop.
 const SHADOW: i32 = 64;
@@ -107,6 +109,71 @@ pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
         let _ = cr.fill();
     });
     area
+}
+/// The rest of the frame the bar starts, down the sides and along the bottom of
+/// the screen, below the windows and keeping them off it. The sides also carry
+/// its round inner corners, as wide as the windows' own corners plus their gap.
+fn frame(app: &gtk::Application, monitor: &gtk::gdk::Monitor) -> [gtk::ApplicationWindow; 3] {
+    [Edge::Left, Edge::Right, Edge::Bottom].map(|edge| {
+        let window = gtk::ApplicationWindow::builder()
+            .application(app)
+            .title("Nexus frame")
+            .build();
+        window.add_css_class("nexus");
+        window.add_css_class("nexus-frame");
+        window.init_layer_shell();
+        window.set_namespace(Some("nexus-frame"));
+        window.set_monitor(Some(monitor));
+        window.set_layer(Layer::Bottom);
+        window.set_keyboard_mode(KeyboardMode::None);
+        let side = edge != Edge::Bottom;
+        let across = if side {
+            [Edge::Top, Edge::Bottom]
+        } else {
+            [Edge::Left, Edge::Right]
+        };
+        for edge in [edge, across[0], across[1]] {
+            window.set_anchor(edge, true);
+        }
+        window.set_exclusive_zone(FRAME);
+        let area = gtk::DrawingArea::new();
+        area.add_css_class("panel-fillet");
+        if side {
+            area.set_content_width(FRAME + FILLET);
+        } else {
+            area.set_content_height(FRAME);
+        }
+        area.set_draw_func(move |area, cr, w, h| {
+            let (w, h) = (f64::from(w), f64::from(h));
+            cr.set_source_color(&area.color());
+            cr.rectangle(0., 0., w, h);
+            if side {
+                use std::f64::consts::{FRAC_PI_2, PI};
+                // Drawn on the left, less the inside of the frame.
+                if edge == Edge::Right {
+                    cr.translate(w, 0.);
+                    cr.scale(-1., 1.);
+                }
+                let (left, top, bottom) = (
+                    f64::from(FRAME),
+                    f64::from(BAR_BOTTOM),
+                    h - f64::from(FRAME),
+                );
+                let r = f64::from(FILLET);
+                cr.new_sub_path();
+                cr.arc(left + r, bottom - r, r, FRAC_PI_2, PI);
+                cr.arc(left + r, top + r, r, PI, 3. * FRAC_PI_2);
+                cr.line_to(w + 1., top);
+                cr.line_to(w + 1., bottom);
+                cr.close_path();
+                cr.set_fill_rule(gtk::cairo::FillRule::EvenOdd);
+            }
+            let _ = cr.fill();
+        });
+        window.set_child(Some(&area));
+        window.present();
+        window
+    })
 }
 impl Surface {
     pub fn new(app: &gtk::Application) -> Rc<Self> {
@@ -347,6 +414,7 @@ impl Surface {
         });
     }
     /// Anchor the panel to its button, excluding the transparent shadow gutters.
+    /// The bar sits between the sides of the frame, which reserve their edges first.
     fn align_below(&self, button: &gtk::Button, monitor: &gtk::gdk::Monitor, right_aligned: bool) {
         let Some(window) = button.root().and_downcast::<gtk::ApplicationWindow>() else {
             return;
@@ -356,10 +424,10 @@ impl Surface {
         };
         let (_, width, _, _) = self.clip.measure(gtk::Orientation::Horizontal, -1);
         let left = if right_aligned {
-            let right = window.margin(Edge::Left) + (bounds.x() + bounds.width()) as i32;
+            let right = FRAME + (bounds.x() + bounds.width()) as i32;
             right - width + SHADOW + FILLET
         } else {
-            let centre = window.margin(Edge::Left) + (bounds.x() + bounds.width() / 2.) as i32;
+            let centre = FRAME + (bounds.x() + bounds.width() / 2.) as i32;
             centre - width / 2
         };
         let left = left.clamp(0, (monitor.geometry().width() - width).max(0));
@@ -410,6 +478,8 @@ impl Drawer {
         let slide = super::slide::Slide::default();
         slide.set_halign(gtk::Align::End);
         slide.set_valign(gtk::Align::End);
+        slide.set_margin_end(FRAME);
+        slide.set_margin_bottom(FRAME);
         slide.set_child(&shape);
         overlay.add_overlay(&slide);
         window.set_child(Some(&overlay));
@@ -490,6 +560,7 @@ struct Indicator {
 struct Bar {
     monitor: gtk::gdk::Monitor,
     window: gtk::ApplicationWindow,
+    frame: [gtk::ApplicationWindow; 3],
     notifications: Indicator,
     tray: Indicator,
     record: Indicator,
@@ -576,6 +647,7 @@ impl Bars {
                 true
             } else {
                 b.window.close();
+                b.frame.iter().for_each(gtk::ApplicationWindow::close);
                 false
             }
         });
@@ -717,6 +789,7 @@ impl Bars {
         Bar {
             monitor: monitor.clone(),
             window,
+            frame: frame(&self.app, monitor),
             notifications,
             tray,
             record,
