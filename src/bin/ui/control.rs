@@ -148,6 +148,16 @@ impl ControlCenter {
             }
         });
         window.add_controller(key);
+        // Hyprland's dim_around rule makes the whole screen the window's input
+        // area: a click on the dimmed backdrop arrives outside its bounds.
+        let click = gtk::GestureClick::new();
+        let w = window.clone();
+        click.connect_pressed(move |_, _, x, y| {
+            if x < 0. || y < 0. || x > f64::from(w.width()) || y > f64::from(w.height()) {
+                w.close();
+            }
+        });
+        window.add_controller(click);
         Rc::new(Self {
             window,
             stack,

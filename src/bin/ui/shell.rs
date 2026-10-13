@@ -111,8 +111,11 @@ pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
     area
 }
 /// The rest of the frame the bar starts, down the sides and along the bottom of
-/// the screen, below the windows and keeping them off it. The sides also carry
-/// its round inner corners, as wide as the windows' own corners plus their gap.
+/// the screen, keeping the windows off it. The sides also carry its round inner
+/// corners, as wide as the windows' own corners plus their gap. Above the
+/// windows like the bar, so a window dimming the screen around it spares both,
+/// but clicks go through to whatever is below. Made before the bar, so the
+/// sides reserve their edges first and run the whole height of the screen.
 fn frame(app: &gtk::Application, monitor: &gtk::gdk::Monitor) -> [gtk::ApplicationWindow; 3] {
     [Edge::Left, Edge::Right, Edge::Bottom].map(|edge| {
         let window = gtk::ApplicationWindow::builder()
@@ -124,7 +127,7 @@ fn frame(app: &gtk::Application, monitor: &gtk::gdk::Monitor) -> [gtk::Applicati
         window.init_layer_shell();
         window.set_namespace(Some("nexus-frame"));
         window.set_monitor(Some(monitor));
-        window.set_layer(Layer::Bottom);
+        window.set_layer(Layer::Top);
         window.set_keyboard_mode(KeyboardMode::None);
         let side = edge != Edge::Bottom;
         let across = if side {
@@ -172,6 +175,9 @@ fn frame(app: &gtk::Application, monitor: &gtk::gdk::Monitor) -> [gtk::Applicati
         });
         window.set_child(Some(&area));
         window.present();
+        if let Some(surface) = window.surface() {
+            surface.set_input_region(&gtk::cairo::Region::create());
+        }
         window
     })
 }
@@ -667,6 +673,7 @@ impl Bars {
         }
     }
     fn create(&self, monitor: &gtk::gdk::Monitor) -> Bar {
+        let frame = frame(&self.app, monitor);
         let window = gtk::ApplicationWindow::builder()
             .application(&self.app)
             .title("Nexus bar")
@@ -798,7 +805,7 @@ impl Bars {
         Bar {
             monitor: monitor.clone(),
             window,
-            frame: frame(&self.app, monitor),
+            frame,
             notifications,
             tray,
             record,
