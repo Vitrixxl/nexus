@@ -1,4 +1,4 @@
-use super::super::{hbox, label, signal_icon};
+use super::super::{hbox, signal_icon};
 use gtk::{glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nexus_control::{Request, Snapshot, request};
@@ -623,6 +623,12 @@ fn setter(op: &'static str) -> std::sync::mpsc::Sender<u8> {
 }
 /// How long a wheel change outweighs the state read before it.
 const WHEEL_HOLD: Duration = Duration::from_millis(1500);
+/// A bar label stays on one line: a wrapping one gets squeezed and clipped.
+fn bar_label(text: &str, class: &str) -> gtk::Label {
+    let l = super::super::label(text, class);
+    l.set_wrap(false);
+    l
+}
 const VOLUME: usize = 0;
 const BRIGHTNESS: usize = 1;
 impl Bars {
@@ -702,9 +708,9 @@ impl Bars {
         launcher.add_css_class("bar-search");
         let middle = hbox(10);
         middle.append(&gtk::Image::from_icon_name("system-search-symbolic"));
-        let clock = label("", "bar-clock");
+        let clock = bar_label("", "bar-clock");
         middle.append(&clock);
-        middle.append(&label("Search", "bar-hint"));
+        middle.append(&bar_label("Search", "bar-hint"));
         launcher.set_child(Some(&middle));
         // The clock stays at the centre whatever shows on either side of it.
         let middle_group = gtk::CenterBox::new();
@@ -847,7 +853,7 @@ impl Bars {
         let icon = gtk::Image::from_icon_name(icon);
         icon.set_pixel_size(16);
         row.append(&icon);
-        let value = label("", "bar-value");
+        let value = bar_label("", "bar-value");
         value.set_visible(false);
         row.append(&value);
         button.set_child(Some(&row));
