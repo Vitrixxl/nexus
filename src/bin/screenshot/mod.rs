@@ -1035,6 +1035,7 @@ impl Screenshot {
                 // A new screenshot replaces the previous notice.
                 stack_tag: Some("nexus-screenshot".into()),
                 time,
+                phone: false,
             },
         );
     }

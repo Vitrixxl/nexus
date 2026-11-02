@@ -3,6 +3,7 @@ pub mod control;
 pub mod launcher;
 pub mod monitor;
 pub mod notifications;
+pub mod phone;
 pub mod shell;
 pub mod slide;
 pub mod streams;

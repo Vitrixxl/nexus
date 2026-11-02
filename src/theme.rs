@@ -283,6 +283,7 @@ window.prompt-window {{ background: transparent; }}
 
 window.notification-popups {{ background: transparent; }}
 .notification-popups .popup-panel {{ background: @nexus_bg; border-radius: 22px 0 0 0; }}
+.notification-popups.left .popup-panel {{ border-radius: 0 22px 0 0; }}
 .notification-popups .notification {{ padding: 14px 18px 16px; }}
 .notification-popups revealer + revealer > .notification {{ border-top: 1px solid alpha(@nexus_fg, 0.06); }}
 .notification-popups .notification.critical {{ background: alpha(@nexus_error, 0.08); }}
@@ -338,6 +339,8 @@ window.nexus.nexus-bar, window.nexus.nexus-frame {{ background: transparent; }}
 .nexus-bar .bar-brand {{ color: @nexus_accent_fg; font-size: 14px; font-weight: 700; padding: 0 12px; }}
 .nexus-bar .bar-search {{ background: alpha(@nexus_fg, 0.06); padding: 0 16px; border-radius: 8px; }}
 .nexus-bar .bar-search:hover {{ background: alpha(@nexus_fg, 0.1); }}
+.nexus-bar .bar-phone {{ background: alpha(@nexus_fg, 0.06); box-shadow: inset 0 0 0 1px alpha(@nexus_fg, 0.1); margin: 0 6px; }}
+.nexus-bar .bar-phone:hover {{ background: alpha(@nexus_fg, 0.1); }}
 .nexus-bar .bar-hint {{ color: @nexus_muted; font-size: 10px; }}
 .nexus-bar .bar-clock {{ font-size: 12px; }}
 .nexus-bar .bar-power {{ color: @nexus_accent_fg; padding: 0 12px; }}

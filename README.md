@@ -10,6 +10,7 @@ A complete, quiet shell for Hyprland. The bar, application launcher, settings pa
 - **Bluetooth** — BlueZ discovery, pairing with PIN/passkey confirmation, connect/disconnect and forget.
 - **Sound** — PipeWire output and microphone levels, mute and device selection, plus a level and mute switch for each application playing sound.
 - **Display** — backlight brightness with `brightnessctl`, and a night light (on/off and colour temperature, on from 21:00 to 7:30) set by `nexusd` itself through wlr-gamma-control.
+- **Phone** — pair an Android phone over Tailscale by scanning the QR code on the Phone page with its camera: the page it opens installs the Nexus app (`android/`, plain Java, no dependencies) and pairs it. The page then shows the phone's battery, storage, memory and CPU, opens its files in Nexus Files, and reads and sends SMS. Its notifications pop up in the bottom-left corner (dismissing one dismisses it on the phone). `nexus phone` opens it.
 - **Monitor** — CPU (per core, temperature, load), memory, network and disk with two minutes of history, and the processes, sortable and filterable, to end with Delete (Shift+Delete forces it). Read straight from `/proc` and `/sys`, once a second and only while the page shows; `nexus monitor` opens it.
 - **Appearance** — light/dark, PNG/JPEG/WebP wallpaper picker, optional wallpaper-derived accent shared by the bar, launcher and settings.
 - **Screenshots** — `nexus screenshot` dims every monitor and highlights the window under the pointer; click to capture it, drag to capture an area, Escape, a right click or the same shortcut again to cancel. The screen is frozen at the moment of the shortcut, or stays live with `--live` and is captured on release. The PNG goes to the clipboard, and with `--save` also to `~/Pictures/screenshots`; a notification shows a thumbnail. `screen` and `window` capture the focused monitor or the active window at once. Outputs are copied in memory through wlr-screencopy and the picker's windows stay ready in the shell, so it opens within a few frames and animates at the display's refresh rate in the Nexus colours.
@@ -87,6 +88,24 @@ It grants only shutdown, restart and suspend to active local sessions, including
 busctl --system call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanPowerOff
 ```
 
+## Files
+
+`nexus-files` is the file manager, in the Nexus colours: places, bookmarks (`~/.config/gtk-3.0/bookmarks`), mounted drives and the paired phone in the sidebar; back/forward/up and an editable path (Ctrl+L) in the header; the folder as a grid with thumbnails or a list (Ctrl+G), sorted by name, size or date, hidden files with Ctrl+H.
+
+```sh
+nexus-files [PATH|URI]        # a folder, or a file's folder with it selected
+nexus-files --phone [PATH]    # the paired phone's storage
+```
+
+- **Fast** — one resident process (D-Bus activated, `io.github.vitrixxl.NexusFiles`) serves every window, so a second window or file dialog opens in a few tens of milliseconds. Folders are listed asynchronously into a 64-folder memory cache: visited folders, and folders the pointer rests on or the keyboard selects, open instantly, then a fresh listing and a folder monitor reconcile them.
+- **Typing filters** the folder as you type; the globe button next to the filter searches the whole computer by name instead (home folder first, then the rest, without `/proc`, `/sys`, `/dev`, `/run`, `.git` and `node_modules`; files listed in `.gitignore` files are skipped), with `fd`, results streaming in, at most 2000.
+- **Thumbnails** come from the freedesktop cache (`~/.cache/thumbnails`); missing ones are made off the main thread for the files on screen only — images by gdk-pixbuf, videos and others by the installed thumbnailers (`ffmpegthumbnailer`…), PDFs by `pdftocairo` — and written back to the cache.
+- **Files** — open (Enter, double-click), Open With, cut/copy/paste (Ctrl+X/C/V, interoperable with other file managers), drag and drop in and out, rename (F2), new folder (Ctrl+Shift+N), move to trash (Delete; restore and empty from Trash), delete permanently (Shift+Delete), open a terminal here, a rubber band to select. Archives (zip, 7z, rar, tar.*, iso, deb, rpm…, and single `.gz`/`.xz`/`.zst`/`.bz2` files) extract here or into a folder with `bsdtar`, and Compress… packs a selection (the name's extension picks the format).
+- **Phone** — the paired phone's files browse like local ones, with thumbnails; opening downloads a copy into `~/.cache/nexus/phone`; copy and paste work both ways.
+- **Default file manager** — the installer makes it the handler of `inode/directory` and of `org.freedesktop.FileManager1`, so "Show in folder" in browsers opens it. Thunar is left installed.
+
+**Browser file dialogs.** Nexus Files implements the `org.freedesktop.impl.portal.FileChooser` portal backend (open, save, save several, folders, filters), so applications that use the file chooser portal — Brave, Chromium, Firefox with `widget.use-xdg-desktop-portal.file-picker=1`, Flatpaks — show it for uploads and downloads. The installer adds `nexus.portal` to `~/.local/share/xdg-desktop-portal/portals` and selects it for the file chooser only in `~/.config/xdg-desktop-portal/hyprland-portals.conf` (`org.freedesktop.impl.portal.FileChooser=nexus;gtk`, everything else stays on `hyprland;gtk`), then restarts the user portal. Dialogs float over the browser window that asked. For a save dialog on every download in Brave, enable Settings › Downloads › "Ask where to save each file before downloading". After updating, `pkill -x nexus-files` (with no window open) loads the new binary.
+
 ## Themes / wallpapers
 
 Settings live in `$XDG_CONFIG_HOME/nexus/settings.json` (default `~/.config/nexus`). The daemon generates `gtk.css`; the persistent shell applies theme changes live across the bar and all panels. Nexus also sets the desktop light/dark preference when a session bus is available.
@@ -102,6 +121,22 @@ When adw-gtk3 is installed (system-wide or in `~/.local/share/themes`), Nexus ge
 Other third-party applications are not recolored.
 
 Wallpaper colors are opt-in. Images are quantized into color buckets to obtain a deterministic accent, with light/dark surfaces selected independently for legibility. Wallpaper rendering uses `swaybg` across outputs. Selecting an image replaces the legacy `mpvpaper` wallpaper; until then the existing wallpaper is retained. A selected image is restored at the next session. Video wallpaper selection is not yet supported.
+
+## Phone
+
+`nexusd` listens on the desktop's Tailscale address only (port 47913), so the phone and the desktop must be on the same tailnet. The token in the QR code is made on the first run and kept in `$XDG_CONFIG_HOME/nexus/phone.json`; it never changes, so the code stays the same and a paired phone reconnects with a tap on the desktop in the app. It is the only credential: delete the file and restart `nexusd` to revoke every phone. The app links to one desktop at a time, the one tapped last, and a desktop to one phone, the one that connected last; Disconnect drops the phone until it is tapped again. Tailscale encrypts the link. Build the app with `android/build.sh` (a JDK and the Android SDK build-tools); the daemon serves `~/.local/share/nexus/nexus-phone.apk` to the pairing page. On the phone, grant what the app lists: notification access, all files access, SMS and contacts, and no battery optimisation so the link survives Doze. The listener binds the address Tailscale had when the daemon started.
+
+
+From a terminal, `nexus phone` takes commands; relative phone paths start at its storage root:
+
+```sh
+nexus phone ls Download
+nexus phone push -m ~/Videos/clip.mp4 DCIM   # -m moves instead of copying
+nexus phone pull DCIM/Camera ~/Pictures
+nexus phone mv Download/a.pdf Documents/a.pdf
+nexus phone rm Download/old.zip
+nexus phone sms +33600000000 On arrive
+```
 
 ## Architecture and limits
 

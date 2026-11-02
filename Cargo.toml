@@ -27,6 +27,7 @@ wayland-scanner = "0.31"
 # Used by the code wayland-scanner generates.
 wayland-backend = "0.3"
 bitflags = "2"
+qrcode = { version = "0.14.1", default-features = false }
 
 [profile.release]
 opt-level = 2
@@ -39,3 +40,7 @@ path = "src/bin/nexus.rs"
 [[bin]]
 name = "nexusd"
 path = "src/bin/nexusd.rs"
+
+[[bin]]
+name = "nexus-files"
+path = "src/bin/files/main.rs"

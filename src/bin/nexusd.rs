@@ -4,11 +4,14 @@ use std::{
     process::{Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
 };
+/// Changes made through the daemon. A poll that read the system before one
+/// must not store what it read over the change's own read-back.
+static CHANGES: AtomicU64 = AtomicU64::new(0);
 fn main() -> anyhow::Result<()> {
     let (listener, _lock) = match listener("daemon") {
         Ok(v) => v,
@@ -36,6 +39,7 @@ fn main() -> anyhow::Result<()> {
         let backend = backend.clone();
         thread::spawn(move || backend.register_agents());
     }
+    let phone = phone::Phone::start()?;
     let catalogue = Arc::new(Mutex::new(launcher::Catalogue::load()));
     launcher::watch(catalogue.clone());
     let settings = theme::load();
@@ -167,6 +171,7 @@ fn main() -> anyhow::Result<()> {
         let state = state.clone();
         let mutations = mutations.clone();
         let clients = clients.clone();
+        let phone = phone.clone();
         thread::spawn(move || {
             let reply = (|| -> anyhow::Result<Reply> {
                 let req: Request = serde_json::from_str(&read_line(&stream)?)?;
@@ -175,11 +180,13 @@ fn main() -> anyhow::Result<()> {
                         let mut snapshot = state.lock().unwrap().clone();
                         snapshot.prompt = b.prompts.current();
                         snapshot.applications_revision = catalogue.lock().unwrap().revision;
+                        snapshot.phone = phone.state.lock().unwrap().clone();
                         Reply {
                             ok: true,
                             error: None,
                             state: Some(snapshot),
                             catalogue: None,
+                            data: None,
                         }
                     }
                     Request::Applications => Reply {
@@ -187,7 +194,38 @@ fn main() -> anyhow::Result<()> {
                         error: None,
                         state: None,
                         catalogue: Some(catalogue.lock().unwrap().clone()),
+                        data: None,
                     },
+                    Request::Phone { op, args } => {
+                        let arg = |k: &str| args[k].as_str().unwrap_or_default().to_owned();
+                        let result = match op.as_str() {
+                            "disconnect" => {
+                                phone.disconnect();
+                                Ok(serde_json::Value::Null)
+                            }
+                            "pull" => {
+                                let dir = match arg("dest") {
+                                    d if !d.is_empty() => d.into(),
+                                    _ => gtk::glib::user_special_dir(gtk::glib::UserDirectory::Downloads)
+                                        .unwrap_or_else(gtk::glib::home_dir),
+                                };
+                                phone.pull(arg("path"), dir);
+                                Ok(serde_json::Value::Null)
+                            }
+                            "push" => {
+                                phone.push(arg("src").into(), arg("dir"));
+                                Ok(serde_json::Value::Null)
+                            }
+                            _ => phone.request(&op, args),
+                        };
+                        match result {
+                            Ok(data) => Reply {
+                                data: Some(data),
+                                ..Reply::result(Ok(()))
+                            },
+                            Err(e) => Reply::result(Err(e)),
+                        }
+                    }
                     Request::Launch { id } => Reply::result(catalogue.lock().unwrap().launch(&id)),
                     Request::Answer {
                         id,
@@ -196,6 +234,7 @@ fn main() -> anyhow::Result<()> {
                     } => Reply::result(b.prompts.answer(id, values, accepted)),
                     Request::Action { op, target, value } => match mutations.try_lock() {
                         Ok(_guard) => {
+                            CHANGES.fetch_add(1, Ordering::SeqCst);
                             let result = b.action(&op, &target, &value);
                             // Toggles are read back at once; sliders stream too fast for that.
                             if result.is_ok()
@@ -217,6 +256,9 @@ fn main() -> anyhow::Result<()> {
                             }
                             if result.is_ok() && op.starts_with("bluetooth-") {
                                 poll_bluetooth(&b, &state);
+                            }
+                            if result.is_ok() && op == "night-light" {
+                                poll_light(&state);
                             }
                             Reply::result(result)
                         }
@@ -247,9 +289,13 @@ fn main() -> anyhow::Result<()> {
 
 /// Reads the Wi-Fi state into the snapshot; false when NetworkManager is unreachable.
 fn poll_wifi(b: &Backend, state: &Mutex<Snapshot>) -> bool {
+    let seen = CHANGES.load(Ordering::SeqCst);
     let result = b.wifi();
     let ok = result.is_ok();
     let mut s = state.lock().unwrap();
+    if CHANGES.load(Ordering::SeqCst) != seen {
+        return ok;
+    }
     match result {
         Ok((on, nets, scanning)) => {
             s.wifi = on;
@@ -266,8 +312,12 @@ fn poll_wifi(b: &Backend, state: &Mutex<Snapshot>) -> bool {
     ok
 }
 fn poll_bluetooth(b: &Backend, state: &Mutex<Snapshot>) {
+    let seen = CHANGES.load(Ordering::SeqCst);
     let result = b.bluetooth();
     let mut s = state.lock().unwrap();
+    if CHANGES.load(Ordering::SeqCst) != seen {
+        return;
+    }
     match result {
         Ok((on, devices, scanning)) => {
             s.bluetooth = on;
@@ -283,6 +333,7 @@ fn poll_bluetooth(b: &Backend, state: &Mutex<Snapshot>) {
     }
 }
 fn poll_audio(state: &Mutex<Snapshot>) {
+    let seen = CHANGES.load(Ordering::SeqCst);
     let volume = backend::volume(false);
     let mic = backend::volume(true);
     let outputs = backend::audio_devices("sinks").unwrap_or_default();
@@ -291,6 +342,9 @@ fn poll_audio(state: &Mutex<Snapshot>) {
     let default_output = backend::run("pactl", &["get-default-sink"]).unwrap_or_default();
     let default_input = backend::run("pactl", &["get-default-source"]).unwrap_or_default();
     let mut s = state.lock().unwrap();
+    if CHANGES.load(Ordering::SeqCst) != seen {
+        return;
+    }
     s.outputs = outputs;
     s.inputs = inputs;
     s.default_output = default_output;
@@ -316,9 +370,13 @@ fn poll_audio(state: &Mutex<Snapshot>) {
 }
 /// Brightness and night light: a sysfs read, and the night light schedule.
 fn poll_light(state: &Mutex<Snapshot>) {
+    let seen = CHANGES.load(Ordering::SeqCst);
     let light = backend::brightness();
     let night_light = night::get();
     let mut s = state.lock().unwrap();
+    if CHANGES.load(Ordering::SeqCst) != seen {
+        return;
+    }
     match light {
         Ok(v) => {
             s.brightness = Some(v);

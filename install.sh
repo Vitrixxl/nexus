@@ -16,7 +16,7 @@ case "${1:-}" in
 esac
 install -d "$prefix/bin" "$prefix/share/applications" "$prefix/share/nexus" "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # Atomic replacement works while the old process is running.
-for bin in nexus nexusd; do
+for bin in nexus nexusd nexus-files; do
     install -m755 "$root/target/release/$bin" "$prefix/bin/$bin.new"
     if [ ! -f /usr/lib/libgtk4-layer-shell.so ] && [ -f "$HOME/.local/share/nexus-runtime/usr/lib/libgtk4-layer-shell.so" ] && command -v patchelf >/dev/null; then
         patchelf --set-rpath '$ORIGIN/../share/nexus-runtime/usr/lib' "$prefix/bin/$bin.new"
@@ -39,6 +39,38 @@ if ! command -v xdg-terminal-exec >/dev/null; then
     fi
     install -Dm644 "$root/vendor/xdg-terminal-exec/LICENSE" "$prefix/share/licenses/nexus/xdg-terminal-exec.LICENSE"
 fi
+# Nexus Files: default file manager, FileManager1 ("Show in folder") and the
+# FileChooser portal backend, all D-Bus activated into one resident process.
+install -m644 "$root/packaging/nexus-files.desktop" "$prefix/share/applications/nexus-files.desktop"
+data="${XDG_DATA_HOME:-$HOME/.local/share}"
+install -d "$data/dbus-1/services" "$data/xdg-desktop-portal/portals"
+for service in org.freedesktop.FileManager1 org.freedesktop.impl.portal.desktop.nexus io.github.vitrixxl.NexusFiles; do
+    sed "s|@bindir@|$prefix/bin|" "$root/packaging/$service.service" > "$data/dbus-1/services/$service.service"
+done
+portal_changed=
+cmp -s "$root/packaging/nexus.portal" "$data/xdg-desktop-portal/portals/nexus.portal" || portal_changed=1
+install -m644 "$root/packaging/nexus.portal" "$data/xdg-desktop-portal/portals/nexus.portal"
+# Only the file chooser moves to Nexus; every other portal stays on hyprland/gtk.
+portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/hyprland-portals.conf"
+if [ ! -e "$portals" ]; then
+    install -Dm644 /dev/stdin "$portals" <<'CONF'
+[preferred]
+default=hyprland;gtk
+org.freedesktop.impl.portal.FileChooser=nexus;gtk
+CONF
+    portal_changed=1
+elif ! grep -q '^org.freedesktop.impl.portal.FileChooser=' "$portals"; then
+    sed -i '/^\[preferred\]/a org.freedesktop.impl.portal.FileChooser=nexus;gtk' "$portals"
+    portal_changed=1
+fi
+if command -v gdbus >/dev/null; then
+    gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+        --method org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 || true
+fi
+if [ -n "$portal_changed" ] && command -v systemctl >/dev/null; then
+    systemctl --user try-restart xdg-desktop-portal.service 2>/dev/null || true
+fi
+if command -v xdg-mime >/dev/null; then xdg-mime default nexus-files.desktop inode/directory; fi
 "$prefix/bin/nexus" init-theme
 if command -v update-desktop-database >/dev/null; then update-desktop-database "$prefix/share/applications"; fi
 printf 'Installed Nexus in %s. Start with nexus-session (or nexusd and nexus).\n' "$prefix"

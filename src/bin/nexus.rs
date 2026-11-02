@@ -1,4 +1,5 @@
 mod lock;
+mod phonectl;
 mod screenshot;
 mod ui;
 use gtk::{gio, glib, prelude::*};
@@ -15,9 +16,10 @@ use std::{
 };
 use ui::control::ControlCenter;
 
-const PAGES: [(&str, &str, &str); 7] = [
+const PAGES: [(&str, &str, &str); 8] = [
     ("wifi", "Wi-Fi", "network-wireless-symbolic"),
     ("bluetooth", "Bluetooth", "bluetooth-symbolic"),
+    ("phone", "Phone", "phone-symbolic"),
     ("sound", "Sound", "audio-volume-high-symbolic"),
     ("display", "Display", "display-brightness-symbolic"),
     (
@@ -61,9 +63,14 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|tray|battery|control|monitor|notifications|wifi|bluetooth|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock [--preview]\nnexus status\nnexus init-theme"
+            "Nexus — desktop control center\n\nnexus [launcher|tray|battery|control|monitor|notifications|wifi|bluetooth|phone|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock [--preview]\nnexus status\nnexus init-theme\n\n{}",
+            phonectl::USAGE
         );
         return Ok(());
+    }
+    // Bare `nexus phone` opens the page; with a command, it talks to the phone.
+    if args.first().is_some_and(|a| a == "phone") && args.len() > 1 {
+        return phonectl::run(&args[1..]);
     }
     // The lock runs on its own, so that it holds whatever happens to the shell.
     if args.first().is_some_and(|a| a == "lock") {
@@ -298,8 +305,8 @@ struct Ui {
     tx: async_channel::Sender<Event>,
     settings: Rc<RefCell<theme::Settings>>,
     updating: Rc<Cell<bool>>,
-    /// Connection operations awaiting the daemon, by network or device, with
-    /// the text their button shows meanwhile.
+    /// Operations awaiting the daemon, by network or device with the text
+    /// their button shows meanwhile, or by toggle with no text.
     pending: Rc<RefCell<HashMap<String, &'static str>>>,
 }
 enum Event {
@@ -366,14 +373,23 @@ fn toggle(ui: &Ui, op: &str) -> gtk::Switch {
     let op = op.to_string();
     s.connect_active_notify(move |s| {
         if !ui.updating.get() {
-            ui.send(action(
-                &op,
-                "",
-                if s.is_active() { "true" } else { "false" },
-            ));
+            ui.pending.borrow_mut().insert(op.clone(), "");
+            ui.run(
+                action(&op, "", if s.is_active() { "true" } else { "false" }),
+                Some(op.clone()),
+            );
         }
     });
     s
+}
+/// Shows the daemon's `value` on the toggle for `op`. Not while the user's own
+/// change is on its way, which a state read before it would undo; and never
+/// the value it already has: setting it stops the switch's slide midway, the
+/// knob stranded and the change never made.
+fn sync_toggle(ui: &Ui, s: &gtk::Switch, op: &str, value: bool) {
+    if s.is_active() != value && !ui.pending.borrow().contains_key(op) {
+        s.set_active(value);
+    }
 }
 fn heading(title: &str, subtitle: &str) -> gtk::Box {
     let b = vbox(4);
@@ -836,7 +852,11 @@ fn build(
         let name = wallpaper_name.clone();
         move |path: Option<&str>| {
             frame.set_visible(path.is_some());
-            preview.set_filename(path);
+            // A 4K wallpaper decodes to 33 MB, for a preview 170 px high.
+            let texture = path
+                .and_then(|p| gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(p, 1280, 720, true).ok())
+                .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf));
+            preview.set_paintable(texture.as_ref());
             match path {
                 Some(path) => {
                     let file = std::path::Path::new(path)
@@ -901,6 +921,8 @@ fn build(
     appearance.append(&colors_row);
     stack.add_named(&appearance, Some("appearance"));
     stack.add_named(&ui::monitor::page(), Some("monitor"));
+    let phone_page = ui::phone::Page::new();
+    stack.add_named(&phone_page.widget, Some("phone"));
     stack.set_visible_child_name("wifi");
 
     // Power stays a full-screen overlay of floating tiles; choices are confirmed
@@ -1050,12 +1072,13 @@ fn build(
     });
     let center = ui::notifications::Center::new(server.clone());
     let drawer = ui::shell::Drawer::new(app, &center.widget);
-    let popups = ui::notifications::Popups::new(app, server.clone());
+    let popups = ui::notifications::Popups::new(app, server.clone(), gtk4_layer_shell::Edge::Right);
+    let phone_popups = ui::notifications::Popups::new(app, server.clone(), gtk4_layer_shell::Edge::Left);
     let shell2 = shell.clone();
     let drawer2 = drawer.clone();
     let control2 = control.clone();
     let search = launcher.search.clone();
-    let (center2, popups2) = (center.clone(), popups.clone());
+    let (center2, popups2, phone_popups2) = (center.clone(), popups.clone(), phone_popups.clone());
     let open: ui::shell::Open = Rc::new(move |page, monitor| {
         if page == "notifications" {
             if shell2.window.is_visible() {
@@ -1066,6 +1089,7 @@ fn build(
             } else {
                 // Everything the popups show is in the list now.
                 popups2.clear();
+                phone_popups2.clear();
                 center2.refresh();
                 drawer2.show(monitor);
             }
@@ -1125,20 +1149,27 @@ fn build(
         })
     };
     {
-        let (popups, sync) = (popups.clone(), sync_notices.clone());
+        let (popups, phone_popups, sync) =
+            (popups.clone(), phone_popups.clone(), sync_notices.clone());
         center.quiet.connect_active_notify(move |s| {
             popups.set_quiet(s.is_active());
+            phone_popups.set_quiet(s.is_active());
             sync();
         });
     }
     {
-        let (popups, drawer) = (popups.clone(), drawer.clone());
+        let (popups, phone_popups, drawer) = (popups.clone(), phone_popups.clone(), drawer.clone());
         glib::spawn_future_local(async move {
             while let Ok(change) = notice_rx.recv().await {
                 match change {
                     // An open list already shows it.
-                    notifications::Change::Posted(n) if !drawer.is_open() => popups.show(&n),
-                    notifications::Change::Closed(id) => popups.hide(id, false),
+                    notifications::Change::Posted(n) if !drawer.is_open() => {
+                        if n.phone { &phone_popups } else { &popups }.show(&n)
+                    }
+                    notifications::Change::Closed(id) => {
+                        popups.hide(id, false);
+                        phone_popups.hide(id, false);
+                    }
                     _ => {}
                 }
                 sync_notices();
@@ -1272,10 +1303,10 @@ fn build(
                     let s = *state;
                     bars.update(&s);
                     ui.updating.set(true);
-                    wifi_toggle.set_active(s.wifi);
+                    sync_toggle(&ui, &wifi_toggle, "wifi-power", s.wifi);
                     wifi_scan.set_sensitive(s.wifi && !s.wifi_scanning);
                     set_scanning(&wifi_scanning, s.wifi_scanning);
-                    bt_toggle.set_active(s.bluetooth);
+                    sync_toggle(&ui, &bt_toggle, "bluetooth-power", s.bluetooth);
                     bt_scan.set_sensitive(s.bluetooth && !s.bluetooth_scanning);
                     set_scanning(&bt_scanning, s.bluetooth_scanning);
                     set_error(&wifi_error, s.wifi_error.as_deref());
@@ -1309,6 +1340,15 @@ fn build(
                             None => String::new(),
                         },
                     );
+                    phone_page.update(&s.phone);
+                    control.set_detail(
+                        "phone",
+                        match (&s.phone.name, &s.phone.pair_url) {
+                            (Some(name), _) => name,
+                            (None, Some(_)) => "Not paired",
+                            (None, None) => "",
+                        },
+                    );
                     control.set_detail(
                         "display",
                         &s.brightness.map(|v| format!("{v}%")).unwrap_or_default(),
@@ -1335,13 +1375,13 @@ fn build(
                     }
                     let night = s.night_light.clone().unwrap_or_default();
                     night_toggle.set_sensitive(s.night_light.is_some());
-                    night_toggle.set_active(night.enabled);
+                    sync_toggle(&ui, &night_toggle, "night-light", night.enabled);
                     night_temperature.set_sensitive(s.night_light.is_some());
                     if !night_temperature.has_focus() && s.night_light.is_some() {
                         night_temperature.set_value(f64::from(night.temperature));
                     }
-                    mute.set_active(s.muted);
-                    mic_mute.set_active(s.mic_muted);
+                    sync_toggle(&ui, &mute, "mute", s.muted);
+                    sync_toggle(&ui, &mic_mute, "mic-mute", s.mic_muted);
                     streams.update(&ui, &s.streams);
                     for (dropdown, stored, devices, default) in [
                         (&outputs, &output_devices, &s.outputs, &s.default_output),

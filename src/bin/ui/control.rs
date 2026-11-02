@@ -2,9 +2,10 @@ use super::super::{hbox, label, vbox};
 use gtk::{glib, prelude::*};
 use std::{cell::Cell, rc::Rc, time::Duration};
 
-pub const PAGES: [(&str, &str, &str); 6] = [
+pub const PAGES: [(&str, &str, &str); 7] = [
     ("wifi", "Wi-Fi", "network-wireless-symbolic"),
     ("bluetooth", "Bluetooth", "bluetooth-symbolic"),
+    ("phone", "Phone", "phone-symbolic"),
     ("sound", "Sound", "audio-volume-high-symbolic"),
     ("display", "Display", "display-brightness-symbolic"),
     (
@@ -15,7 +16,7 @@ pub const PAGES: [(&str, &str, &str); 6] = [
     ("monitor", "Monitor", "power-profile-performance-symbolic"),
 ];
 /// Sidebar groups, by index into `PAGES`.
-const SECTIONS: [(&str, std::ops::Range<usize>); 2] = [("Connections", 0..2), ("System", 2..6)];
+const SECTIONS: [(&str, std::ops::Range<usize>); 2] = [("Connections", 0..3), ("System", 3..7)];
 
 /// The settings pages live in a regular floating window, detached from the bar.
 pub struct ControlCenter {

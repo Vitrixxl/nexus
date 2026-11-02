@@ -15,6 +15,9 @@ pub const NAME: &str = "org.freedesktop.Notifications";
 pub const PATH: &str = "/org/freedesktop/Notifications";
 /// Older notifications fall out of the history beyond this.
 pub const HISTORY: usize = 100;
+/// Pictures are kept no larger than this: cards show them at 48 px at most,
+/// and the history holds up to [`HISTORY`] of them.
+pub const PICTURE: i32 = 128;
 /// How long a popup stays when the application leaves it to the server.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(6);
 const CAPABILITIES: [&str; 6] = [
@@ -110,6 +113,8 @@ pub struct Notification {
     pub stack_tag: Option<String>,
     /// Seconds since the Unix epoch.
     pub time: i64,
+    /// Forwarded from the paired phone (`x-nexus-phone`): pops up on the left.
+    pub phone: bool,
 }
 impl Notification {
     pub fn default_action(&self) -> bool {
@@ -218,19 +223,47 @@ fn pixels(v: &glib::Variant) -> Option<Image> {
     let needed = (height.checked_sub(1)? as usize)
         .checked_mul(usize::try_from(rowstride).ok()?)?
         .checked_add(row as usize)?;
-    ((1..=4096).contains(&width)
+    if !((1..=4096).contains(&width)
         && (1..=4096).contains(&height)
         && bits == 8
         && channels == if has_alpha { 4 } else { 3 }
         && rowstride >= row
         && data.len() >= needed)
-        .then_some(Image::Pixels(Pixels {
+    {
+        return None;
+    }
+    let scale = f64::from(PICTURE) / f64::from(width.max(height));
+    if scale >= 1. {
+        return Some(Image::Pixels(Pixels {
             width,
             height,
             rowstride,
             has_alpha,
             data,
-        }))
+        }));
+    }
+    // Album art and photos arrive at full size, up to 64 MB each.
+    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
+        &data,
+        gtk::gdk_pixbuf::Colorspace::Rgb,
+        has_alpha,
+        8,
+        width,
+        height,
+        rowstride,
+    )
+    .scale_simple(
+        ((f64::from(width) * scale).round() as i32).max(1),
+        ((f64::from(height) * scale).round() as i32).max(1),
+        gtk::gdk_pixbuf::InterpType::Bilinear,
+    )?;
+    Some(Image::Pixels(Pixels {
+        width: pixbuf.width(),
+        height: pixbuf.height(),
+        rowstride: pixbuf.rowstride(),
+        has_alpha,
+        data: pixbuf.read_pixel_bytes(),
+    }))
 }
 /// Reads the arguments of a `Notify` call: `(susssasa{sv}i)`.
 pub fn parse(params: &glib::Variant) -> Option<(u32, Notification)> {
@@ -288,6 +321,7 @@ pub fn parse(params: &glib::Variant) -> Option<(u32, Notification)> {
             time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64),
+            phone: bool_hint(&hints, "x-nexus-phone"),
         },
     ))
 }
@@ -649,6 +683,15 @@ mod tests {
         // Data shorter than the last row would make GTK read past the buffer.
         let (_, n) = parse(&notify("A", 0, image(15))).unwrap();
         assert_eq!(n.image, None);
+        // Full-size album art is kept at the size cards show.
+        let art = HashMap::from([(
+            "image-data".to_string(),
+            (512i32, 256i32, 1536i32, false, 8i32, 3i32, vec![0u8; 1536 * 256]).to_variant(),
+        )]);
+        let (_, n) = parse(&notify("A", 0, art)).unwrap();
+        assert!(matches!(n.image, Some(Image::Pixels(ref p))
+            if (p.width, p.height) == (PICTURE, PICTURE / 2)
+                && p.data.len() >= (p.rowstride * (p.height - 1) + p.width * 3) as usize));
         let path = HashMap::from([(
             "image-path".to_string(),
             "file:///tmp/cover%20art.png".to_variant(),

@@ -5,7 +5,7 @@ use super::{
 };
 use gtk::{gio, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
-use nexus_control::notifications::{Image, Notification, Server, Urgency};
+use nexus_control::notifications::{Image, Notification, PICTURE, Server, Urgency};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -33,7 +33,12 @@ fn picture(image: &Image, size: i32) -> Option<gtk::Image> {
             );
             gtk::Image::from_paintable(Some(&texture))
         }
-        Image::File(path) if std::path::Path::new(path).is_file() => gtk::Image::from_file(path),
+        // Decoded at the size shown, not the file's own.
+        Image::File(path) => {
+            let pixbuf =
+                gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, PICTURE, PICTURE, true).ok()?;
+            gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)))
+        }
         Image::Named(name)
             if gtk::IconTheme::for_display(&gtk::gdk::Display::default()?).has_icon(name) =>
         {
@@ -180,27 +185,29 @@ fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>
     card
 }
 
-/// Dragging the card right shifts it; let go far enough and it flies off
-/// the screen before `dismiss` runs, else it springs back.
-fn swipe(slide: &Slide, dismiss: impl Fn() + 'static) {
+/// Dragging the card toward the screen edge (`dir` 1 right, -1 left) shifts
+/// it; let go far enough and it flies off the screen before `dismiss` runs,
+/// else it springs back.
+fn swipe(slide: &Slide, dir: f64, dismiss: impl Fn() + 'static) {
     let drag = gtk::GestureDrag::new();
     let s = slide.downgrade();
     drag.connect_drag_update(move |gesture, dx, _| {
         let Some(slide) = s.upgrade() else { return };
+        let dx = dx * dir;
         // Past a few pixels this is a swipe, not a click on the card.
         if dx > 6. {
             gesture.set_state(gtk::EventSequenceState::Claimed);
         }
-        slide.drag_to(dx.max(0.) as f32, 0.);
+        slide.drag_to((dx.max(0.) * dir) as f32, 0.);
     });
     let s = slide.downgrade();
     let dismiss = Rc::new(dismiss);
     drag.connect_drag_end(move |_, dx, _| {
         let Some(slide) = s.upgrade() else { return };
         let width = slide.width() as f32;
-        if dx as f32 > (width * 0.3).min(120.) {
+        if (dx * dir) as f32 > (width * 0.3).min(120.) {
             let dismiss = dismiss.clone();
-            slide.glide((width, 0.), 200, move || dismiss());
+            slide.glide((width * dir as f32, 0.), 200, move || dismiss());
         } else {
             slide.glide((0., 0.), 200, || {});
         }
@@ -224,15 +231,22 @@ pub struct Popups {
     shown: RefCell<Vec<Rc<Popup>>>,
     /// Do not disturb: only critical notifications pop up.
     quiet: Cell<bool>,
+    left: bool,
 }
 impl Popups {
-    pub fn new(app: &gtk::Application, server: Rc<Server>) -> Rc<Self> {
+    /// Out of the bottom corner on `side`: `Edge::Right`, or `Edge::Left` for
+    /// the phone's.
+    pub fn new(app: &gtk::Application, server: Rc<Server>, side: Edge) -> Rc<Self> {
+        let left = side == Edge::Left;
         let window = gtk::Window::builder()
             .application(app)
             .title("Nexus notifications")
             .build();
         window.add_css_class("nexus");
         window.add_css_class("notification-popups");
+        if left {
+            window.add_css_class("left");
+        }
         window.init_layer_shell();
         window.set_namespace(Some("nexus-notifications"));
         window.set_layer(Layer::Overlay);
@@ -240,20 +254,24 @@ impl Popups {
         // Into the frame's corner, over everything, whatever reserves the edges.
         window.set_exclusive_zone(-1);
         window.set_anchor(Edge::Bottom, true);
-        window.set_anchor(Edge::Right, true);
+        window.set_anchor(side, true);
         window.set_margin(Edge::Bottom, FRAME);
-        window.set_margin(Edge::Right, FRAME);
+        window.set_margin(side, FRAME);
         let list = vbox(0);
         list.add_css_class("popup-panel");
         list.set_overflow(gtk::Overflow::Hidden);
         list.set_width_request(POPUP_WIDTH);
         list.set_margin_top(FILLET);
-        list.set_margin_start(FILLET);
+        if left {
+            list.set_margin_end(FILLET);
+        } else {
+            list.set_margin_start(FILLET);
+        }
         let shape = gtk::Overlay::new();
         shape.set_child(Some(&list));
-        shape.add_overlay(&fillet(Edge::Right, false, FILLET));
-        let corner = fillet(Edge::Bottom, false, FILLET);
-        corner.set_halign(gtk::Align::Start);
+        shape.add_overlay(&fillet(side, false, FILLET));
+        let corner = fillet(Edge::Bottom, left, FILLET);
+        corner.set_halign(if left { gtk::Align::End } else { gtk::Align::Start });
         shape.add_overlay(&corner);
         window.set_child(Some(&shape));
         Rc::new(Self {
@@ -262,6 +280,7 @@ impl Popups {
             server,
             shown: RefCell::default(),
             quiet: Cell::new(false),
+            left,
         })
     }
     pub fn set_quiet(&self, quiet: bool) {
@@ -314,7 +333,7 @@ impl Popups {
         slide.set_child(content);
         revealer.set_child(Some(&slide));
         let weak = Rc::downgrade(self);
-        swipe(&slide, move || {
+        swipe(&slide, if self.left { -1. } else { 1. }, move || {
             if let Some(s) = weak.upgrade() {
                 s.hide(id, false);
             }

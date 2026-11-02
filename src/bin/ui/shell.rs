@@ -46,10 +46,14 @@ const POWER_LEAVE: Duration = Duration::from_millis(220);
 pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.add_css_class("panel-fillet");
-    if edge == Edge::Right {
+    if matches!(edge, Edge::Right | Edge::Left) {
         area.set_content_width(length);
         area.set_content_height(length + 1);
-        area.set_halign(gtk::Align::End);
+        area.set_halign(if edge == Edge::Right {
+            gtk::Align::End
+        } else {
+            gtk::Align::Start
+        });
         area.set_valign(if after {
             gtk::Align::End
         } else {
@@ -83,6 +87,11 @@ pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
             Edge::Right => {
                 cr.translate(w, 0.);
                 cr.rotate(FRAC_PI_2);
+                (w, h) = (h, w);
+            }
+            // The right edge's, mirrored.
+            Edge::Left => {
+                cr.transform(gtk::cairo::Matrix::new(0., 1., 1., 0., 0., 0.));
                 (w, h) = (h, w);
             }
             _ => {}
@@ -577,6 +586,9 @@ struct Bar {
     window: gtk::ApplicationWindow,
     frame: [gtk::ApplicationWindow; 3],
     notifications: Indicator,
+    /// The paired phone: its battery and link, framed; hidden without one.
+    phone: Indicator,
+    phone_battery: gtk::Image,
     tray: Indicator,
     record: Indicator,
     wifi: Indicator,
@@ -756,6 +768,14 @@ impl Bars {
             "Notifications",
             "notifications",
         );
+        let phone = self.indicator(monitor, "phone-symbolic", "Phone", "phone");
+        phone.button.add_css_class("bar-phone");
+        phone.button.set_visible(false);
+        let phone_battery = gtk::Image::from_icon_name("battery-symbolic");
+        phone_battery.set_pixel_size(14);
+        if let Some(row) = phone.button.child().and_downcast::<gtk::Box>() {
+            row.insert_child_after(&phone_battery, Some(&phone.icon));
+        }
         let wifi = self.indicator(monitor, "network-wireless-symbolic", "Wi-Fi", "wifi");
         let bluetooth = self.indicator(monitor, "bluetooth-symbolic", "Bluetooth", "bluetooth");
         let sound = self.indicator(monitor, "audio-volume-high-symbolic", "Sound", "sound");
@@ -789,6 +809,7 @@ impl Bars {
         );
         power.button.add_css_class("bar-power");
         for b in [
+            &phone,
             &notifications,
             &wifi,
             &bluetooth,
@@ -813,6 +834,8 @@ impl Bars {
             window,
             frame,
             notifications,
+            phone,
+            phone_battery,
             tray,
             record,
             wifi,
@@ -949,8 +972,33 @@ impl Bars {
             self.level(VOLUME, s.volume),
             self.level(BRIGHTNESS, s.brightness),
         );
+        let phone = s.phone.name.as_ref().map(|name| {
+            let info = s.phone.info.clone().unwrap_or_default();
+            let level = info["battery"]["level"].as_u64();
+            let charging = info["battery"]["charging"] == true;
+            let network = info["network"].as_str().unwrap_or("Connected");
+            let tooltip = match level {
+                Some(l) => format!("{name} · {l}%{} · {network}", if charging { " charging" } else { "" }),
+                None => format!("{name} · {network}"),
+            };
+            (level, charging, tooltip)
+        });
         for bar in self.bars.borrow().iter() {
             bar.clock.set_text(&time);
+            bar.phone.button.set_visible(phone.is_some());
+            if let Some((level, charging, tooltip)) = &phone {
+                bar.phone.button.set_tooltip_text(Some(tooltip));
+                bar.phone_battery.set_visible(level.is_some());
+                bar.phone.value.set_visible(level.is_some());
+                if let Some(l) = level {
+                    bar.phone_battery.set_icon_name(Some(&format!(
+                        "battery-level-{}{}-symbolic",
+                        l.min(&100) / 10 * 10,
+                        if *charging { "-charging" } else { "" }
+                    )));
+                    bar.phone.value.set_text(&format!("{l}%"));
+                }
+            }
             let network = s.networks.iter().find(|n| n.connected());
             bar.wifi.icon.set_icon_name(Some(match network {
                 Some(n) => signal_icon(n.signal),

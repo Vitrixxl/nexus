@@ -4,6 +4,8 @@ pub mod launcher;
 pub mod monitor;
 pub mod night;
 pub mod notifications;
+pub mod phone;
+pub mod phone_client;
 pub mod power;
 pub mod theme;
 pub mod tray;
@@ -109,6 +111,8 @@ pub struct Snapshot {
     pub prompt: Option<Prompt>,
     #[serde(default)]
     pub applications_revision: u64,
+    #[serde(default)]
+    pub phone: phone::PhoneState,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -133,6 +137,12 @@ pub enum Request {
     Theme {
         settings: theme::Settings,
     },
+    /// A request for the paired phone; `pull`, `push` and `disconnect` are the daemon's own.
+    Phone {
+        op: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
 }
 #[derive(Serialize, Deserialize)]
 pub struct Reply {
@@ -141,6 +151,8 @@ pub struct Reply {
     pub state: Option<Snapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalogue: Option<launcher::Catalogue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 impl Reply {
     pub fn result(result: Result<()>) -> Self {
@@ -150,12 +162,14 @@ impl Reply {
                 error: None,
                 state: None,
                 catalogue: None,
+                data: None,
             },
             Err(e) => Self {
                 ok: false,
                 error: Some(e.to_string()),
                 state: None,
                 catalogue: None,
+                data: None,
             },
         }
     }
