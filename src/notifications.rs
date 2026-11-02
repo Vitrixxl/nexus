@@ -686,7 +686,16 @@ mod tests {
         // Full-size album art is kept at the size cards show.
         let art = HashMap::from([(
             "image-data".to_string(),
-            (512i32, 256i32, 1536i32, false, 8i32, 3i32, vec![0u8; 1536 * 256]).to_variant(),
+            (
+                512i32,
+                256i32,
+                1536i32,
+                false,
+                8i32,
+                3i32,
+                vec![0u8; 1536 * 256],
+            )
+                .to_variant(),
         )]);
         let (_, n) = parse(&notify("A", 0, art)).unwrap();
         assert!(matches!(n.image, Some(Image::Pixels(ref p))

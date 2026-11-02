@@ -1073,7 +1073,8 @@ fn build(
     let center = ui::notifications::Center::new(server.clone());
     let drawer = ui::shell::Drawer::new(app, &center.widget);
     let popups = ui::notifications::Popups::new(app, server.clone(), gtk4_layer_shell::Edge::Right);
-    let phone_popups = ui::notifications::Popups::new(app, server.clone(), gtk4_layer_shell::Edge::Left);
+    let phone_popups =
+        ui::notifications::Popups::new(app, server.clone(), gtk4_layer_shell::Edge::Left);
     let shell2 = shell.clone();
     let drawer2 = drawer.clone();
     let control2 = control.clone();

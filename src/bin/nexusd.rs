@@ -206,8 +206,10 @@ fn main() -> anyhow::Result<()> {
                             "pull" => {
                                 let dir = match arg("dest") {
                                     d if !d.is_empty() => d.into(),
-                                    _ => gtk::glib::user_special_dir(gtk::glib::UserDirectory::Downloads)
-                                        .unwrap_or_else(gtk::glib::home_dir),
+                                    _ => gtk::glib::user_special_dir(
+                                        gtk::glib::UserDirectory::Downloads,
+                                    )
+                                    .unwrap_or_else(gtk::glib::home_dir),
                                 };
                                 phone.pull(arg("path"), dir);
                                 Ok(serde_json::Value::Null)

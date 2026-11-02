@@ -271,7 +271,11 @@ impl Popups {
         shape.set_child(Some(&list));
         shape.add_overlay(&fillet(side, false, FILLET));
         let corner = fillet(Edge::Bottom, left, FILLET);
-        corner.set_halign(if left { gtk::Align::End } else { gtk::Align::Start });
+        corner.set_halign(if left {
+            gtk::Align::End
+        } else {
+            gtk::Align::Start
+        });
         shape.add_overlay(&corner);
         window.set_child(Some(&shape));
         Rc::new(Self {

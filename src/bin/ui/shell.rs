@@ -978,7 +978,10 @@ impl Bars {
             let charging = info["battery"]["charging"] == true;
             let network = info["network"].as_str().unwrap_or("Connected");
             let tooltip = match level {
-                Some(l) => format!("{name} · {l}%{} · {network}", if charging { " charging" } else { "" }),
+                Some(l) => format!(
+                    "{name} · {l}%{} · {network}",
+                    if charging { " charging" } else { "" }
+                ),
                 None => format!("{name} · {network}"),
             };
             (level, charging, tooltip)

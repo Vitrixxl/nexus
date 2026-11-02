@@ -411,7 +411,11 @@ impl Browser {
         band.set_draw_func(move |area, cr, _, _| {
             let Some([x, y, w, h]) = r.get() else { return };
             let c = area.color();
-            let (red, green, blue) = (f64::from(c.red()), f64::from(c.green()), f64::from(c.blue()));
+            let (red, green, blue) = (
+                f64::from(c.red()),
+                f64::from(c.green()),
+                f64::from(c.blue()),
+            );
             cr.rectangle(x + 0.5, y + 0.5, w, h);
             cr.set_source_rgba(red, green, blue, 0.15);
             let _ = cr.fill_preserve();
@@ -729,10 +733,16 @@ impl Browser {
         zoom.set_propagation_phase(gtk::PropagationPhase::Capture);
         let w = weak.clone();
         zoom.connect_scroll(move |c, _, dy| {
-            if !c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+            if !c
+                .current_event_state()
+                .contains(gdk::ModifierType::CONTROL_MASK)
+            {
                 return glib::Propagation::Proceed;
             }
-            let level = ZOOM.get().saturating_add_signed(if dy < 0. { 1 } else { -1 }).min(TILES.len() - 1);
+            let level = ZOOM
+                .get()
+                .saturating_add_signed(if dy < 0. { 1 } else { -1 })
+                .min(TILES.len() - 1);
             if level != ZOOM.get() {
                 ZOOM.set(level);
                 if let Some(b) = w.upgrade() {
@@ -771,7 +781,12 @@ impl Browser {
         let place = move |y: f64| {
             let b = w.upgrade()?;
             let row = b.places.row_at_y(y as i32)?;
-            let loc = b.place_locs.borrow().get(row.index() as usize).cloned().flatten()?;
+            let loc = b
+                .place_locs
+                .borrow()
+                .get(row.index() as usize)
+                .cloned()
+                .flatten()?;
             Some((b, row, loc))
         };
         let p = place.clone();
@@ -797,7 +812,12 @@ impl Browser {
                 return false;
             };
             b.places.drag_unhighlight_row();
-            let items = list.files().iter().filter_map(|f| f.path()).map(Loc::Local).collect();
+            let items = list
+                .files()
+                .iter()
+                .filter_map(|f| f.path())
+                .map(Loc::Local)
+                .collect();
             b.copy_to(items, dest);
             true
         });
@@ -917,7 +937,11 @@ impl Browser {
         }
         // A connected phone shows among the places; a dialog that opens
         // files offers its files too.
-        if self.chooser.as_ref().is_none_or(|c| !c.save && !c.directory) {
+        if self
+            .chooser
+            .as_ref()
+            .is_none_or(|c| !c.save && !c.directory)
+        {
             let w = weak.clone();
             let poll = move || {
                 let w = w.clone();
@@ -2099,20 +2123,32 @@ fn rubber_band(weak: &Weak<Browser>, view: &gtk::Widget) {
     let base: Rc<RefCell<gtk::Bitset>> = Rc::new(RefCell::new(gtk::Bitset::new_empty()));
     let (w, st, bs) = (weak.clone(), start.clone(), base.clone());
     drag.connect_drag_begin(move |g, x, y| {
-        let (Some(b), Some(view)) = (w.upgrade(), g.widget()) else { return };
+        let (Some(b), Some(view)) = (w.upgrade(), g.widget()) else {
+            return;
+        };
         if on_item(&view, x, y) {
             g.set_state(gtk::EventSequenceState::Denied);
             return;
         }
         let v = b.scroller.vadjustment().value();
         st.set(Some((x, y + v)));
-        let keep = g.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
-        *bs.borrow_mut() = if keep { b.selection.selection() } else { gtk::Bitset::new_empty() };
+        let keep = g
+            .current_event_state()
+            .contains(gdk::ModifierType::CONTROL_MASK);
+        *bs.borrow_mut() = if keep {
+            b.selection.selection()
+        } else {
+            gtk::Bitset::new_empty()
+        };
     });
     let (w, st, bs) = (weak.clone(), start.clone(), base.clone());
     drag.connect_drag_update(move |g, dx, dy| {
-        let (Some(b), Some(view), Some((x0, y0))) = (w.upgrade(), g.widget(), st.get()) else { return };
-        let Some((sx, sy)) = g.start_point() else { return };
+        let (Some(b), Some(view), Some((x0, y0))) = (w.upgrade(), g.widget(), st.get()) else {
+            return;
+        };
+        let Some((sx, sy)) = g.start_point() else {
+            return;
+        };
         g.set_state(gtk::EventSequenceState::Claimed);
         let v = b.scroller.vadjustment().value();
         // The band in the view's coordinates, its start following the scroll.
@@ -2135,7 +2171,8 @@ fn rubber_band(weak: &Weak<Browser>, view: &gtk::Widget) {
             child = c.next_sibling();
         }
         let n = b.selection.n_items();
-        b.selection.set_selection(&hits, &gtk::Bitset::new_range(0, n));
+        b.selection
+            .set_selection(&hits, &gtk::Bitset::new_range(0, n));
         if let Some((ox, oy)) = view.translate_coordinates(&b.band, left, top) {
             b.band_rect.set(Some([ox, oy, right - left, bottom - top]));
             b.band.queue_draw();

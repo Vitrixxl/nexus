@@ -32,7 +32,11 @@ fn remote(path: &str, root: &mut Option<String>) -> Result<String> {
     }
     let base = root.as_deref().unwrap_or_default();
     let rest = path.trim_start_matches("./").trim_end_matches('/');
-    Ok(if rest.is_empty() || rest == "." { base.to_owned() } else { format!("{base}/{rest}") })
+    Ok(if rest.is_empty() || rest == "." {
+        base.to_owned()
+    } else {
+        format!("{base}/{rest}")
+    })
 }
 fn progress(line: String) {
     eprint!("\r\x1b[K{line}");
@@ -56,9 +60,15 @@ pub fn run(args: &[String]) -> Result<()> {
     let rest = &args[args.len().min(1)..];
     match cmd {
         "status" => {
-            let phone = request(&Request::Status)?.state.map(|s| s.phone).unwrap_or_default();
+            let phone = request(&Request::Status)?
+                .state
+                .map(|s| s.phone)
+                .unwrap_or_default();
             let Some(name) = phone.name else {
-                bail!("No phone is connected. Pair one with: {}", phone.pair_url.unwrap_or_default());
+                bail!(
+                    "No phone is connected. Pair one with: {}",
+                    phone.pair_url.unwrap_or_default()
+                );
             };
             println!("{name}");
             if let Some(info) = phone.info {
@@ -86,12 +96,21 @@ pub fn run(args: &[String]) -> Result<()> {
             let dir = remote(dest.as_deref().unwrap_or("Download"), &mut root)?;
             for src in srcs {
                 let local = Path::new(&src);
-                let Some(name) = local.canonicalize()?.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                let Some(name) = local
+                    .canonicalize()?
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                else {
                     bail!("Cannot send {src}");
                 };
-                upload_tree(local, &format!("{dir}/{name}"), &progress).map_err(anyhow::Error::msg)?;
+                upload_tree(local, &format!("{dir}/{name}"), &progress)
+                    .map_err(anyhow::Error::msg)?;
                 if moving {
-                    if local.is_dir() { std::fs::remove_dir_all(local)? } else { std::fs::remove_file(local)? }
+                    if local.is_dir() {
+                        std::fs::remove_dir_all(local)?
+                    } else {
+                        std::fs::remove_file(local)?
+                    }
                 }
                 eprintln!("\r\x1b[K{src} → {dir}/{name}");
             }
@@ -123,7 +142,10 @@ pub fn run(args: &[String]) -> Result<()> {
             call("mkdir", json!({ "path": remote(&rest[0], &mut root)? }))?;
         }
         "sms" if rest.len() >= 2 => {
-            call("sms_send", json!({ "to": rest[0], "body": rest[1..].join(" ") }))?;
+            call(
+                "sms_send",
+                json!({ "to": rest[0], "body": rest[1..].join(" ") }),
+            )?;
         }
         "disconnect" => {
             call("disconnect", serde_json::Value::Null)?;

@@ -136,7 +136,11 @@ impl Stat {
 }
 fn uptime(seconds: u64) -> String {
     let (d, h, m) = (seconds / 86400, seconds / 3600 % 24, seconds / 60 % 60);
-    if d > 0 { format!("{d}d {h}h") } else { format!("{h}h {m:02}m") }
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else {
+        format!("{h}h {m:02}m")
+    }
 }
 
 pub struct Page {
@@ -328,7 +332,8 @@ impl Page {
                 return;
             };
             p.to.set_visible(false);
-            p.with.set_text(if name.is_empty() { &address } else { &name });
+            p.with
+                .set_text(if name.is_empty() { &address } else { &name });
             *p.current.borrow_mut() = Some((thread, address));
             p.load_messages();
         });
@@ -359,12 +364,15 @@ impl Page {
                 p.report(r.map(|_| ()));
                 if ok {
                     // The phone writes the message to its store as it sends it.
-                    glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || {
-                        p.load_threads();
-                        if p.current.borrow().is_some() {
-                            p.load_messages();
-                        }
-                    });
+                    glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(800),
+                        move || {
+                            p.load_threads();
+                            if p.current.borrow().is_some() {
+                                p.load_messages();
+                            }
+                        },
+                    );
                 }
             });
         };
@@ -409,7 +417,11 @@ impl Page {
         self.summary.set_text(&summary.join(" · "));
         let b = &i["battery"];
         let level = b["level"].as_f64().unwrap_or(0.);
-        let charging = if b["charging"] == true { "Charging" } else { "On battery" };
+        let charging = if b["charging"] == true {
+            "Charging"
+        } else {
+            "On battery"
+        };
         self.battery.set(
             &format!("{level:.0}%"),
             level / 100.,
@@ -421,11 +433,22 @@ impl Page {
             (total.saturating_sub(free), total)
         };
         let (u, t) = used(&i["storage"]);
-        self.storage.set(&size(u), u as f64 / t.max(1) as f64, &format!("of {} · {} free", size(t), size(t - u)));
+        self.storage.set(
+            &size(u),
+            u as f64 / t.max(1) as f64,
+            &format!("of {} · {} free", size(t), size(t - u)),
+        );
         let (u, t) = used(&i["ram"]);
-        self.memory.set(&size(u), u as f64 / t.max(1) as f64, &format!("of {}", size(t)));
+        self.memory.set(
+            &size(u),
+            u as f64 / t.max(1) as f64,
+            &format!("of {}", size(t)),
+        );
         let c = &i["cpu"];
-        let (mhz, max) = (c["mhz"].as_u64().unwrap_or(0), c["max_mhz"].as_u64().unwrap_or(0));
+        let (mhz, max) = (
+            c["mhz"].as_u64().unwrap_or(0),
+            c["max_mhz"].as_u64().unwrap_or(0),
+        );
         let soc = c["soc"].as_str().unwrap_or("");
         let cores = format!("{} cores", c["cores"].as_u64().unwrap_or(0));
         // Some phones keep their CPU frequencies to themselves.
@@ -437,7 +460,12 @@ impl Page {
         self.cpu.set(
             &value,
             mhz as f64 / max.max(1) as f64,
-            &[detail.as_str(), soc].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · "),
+            &[detail.as_str(), soc]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" · "),
         );
     }
     fn say(&self, text: &str) {
@@ -474,7 +502,9 @@ impl Page {
         });
     }
     fn load_messages(self: &Rc<Self>) {
-        let Some((thread, _)) = self.current.borrow().clone() else { return };
+        let Some((thread, _)) = self.current.borrow().clone() else {
+            return;
+        };
         let p = self.clone();
         call("sms_list", json!({ "thread": thread }), move |r| {
             let data = match r {
@@ -488,7 +518,11 @@ impl Page {
                 bubble.set_selectable(true);
                 bubble.set_max_width_chars(48);
                 let out = m["out"] == true;
-                bubble.set_halign(if out { gtk::Align::End } else { gtk::Align::Start });
+                bubble.set_halign(if out {
+                    gtk::Align::End
+                } else {
+                    gtk::Align::Start
+                });
                 p.messages.append(&bubble);
             }
             // Newest at the bottom, in view.

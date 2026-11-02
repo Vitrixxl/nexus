@@ -73,13 +73,17 @@ pub struct Phone {
 fn config() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        })
         .join("nexus/phone.json")
 }
 fn seen_path() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
+        })
         .join("nexus/phone-notifications.json")
 }
 /// The newest 500 by post time: removals on the phone keep it short anyway.
@@ -145,7 +149,9 @@ fn tailscale_ip() -> Result<String> {
 /// /proc rather than by taking the lock's file lock, which would make a
 /// `nexus lock` started at that instant think the screen already locked.
 fn screen_locked() -> bool {
-    let Ok(procs) = fs::read_dir("/proc") else { return false };
+    let Ok(procs) = fs::read_dir("/proc") else {
+        return false;
+    };
     procs
         .flatten()
         .any(|p| fs::read(p.path().join("cmdline")).is_ok_and(|c| is_locker(&c)))
@@ -155,7 +161,9 @@ fn is_locker(cmdline: &[u8]) -> bool {
     let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
     let name = args[0].rsplit(|b| *b == b'/').next().unwrap_or_default();
     name == b"hyprlock"
-        || (name == b"nexus" && args.get(1) == Some(&&b"lock"[..]) && !args.contains(&&b"--preview"[..]))
+        || (name == b"nexus"
+            && args.get(1) == Some(&&b"lock"[..])
+            && !args.contains(&&b"--preview"[..]))
 }
 fn hostname() -> String {
     fs::read_to_string("/etc/hostname")
@@ -193,9 +201,8 @@ impl Phone {
             // ponytail: binds the address Tailscale had at startup; a new one
             // takes a daemon restart.
             loop {
-                let bound = tailscale_ip().and_then(|ip| {
-                    Ok((TcpListener::bind((ip.as_str(), PORT))?, ip))
-                });
+                let bound =
+                    tailscale_ip().and_then(|ip| Ok((TcpListener::bind((ip.as_str(), PORT))?, ip)));
                 match bound {
                     Ok((listener, ip)) => {
                         p.set_url(&ip);
@@ -251,9 +258,13 @@ impl Phone {
     fn serve(self: &Arc<Self>, stream: TcpStream) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(90)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(20)));
-        let Ok(clone) = stream.try_clone() else { return };
+        let Ok(clone) = stream.try_clone() else {
+            return;
+        };
         let mut reader = BufReader::new(clone);
-        let Ok(Some(first)) = read_line(&mut reader) else { return };
+        let Ok(Some(first)) = read_line(&mut reader) else {
+            return;
+        };
         if first.starts_with("GET ") {
             let _ = self.http(&first, stream);
             return;
@@ -271,7 +282,10 @@ impl Phone {
             let _ = link.send(&json!({ "t": "bye", "reason": "locked" }));
             return;
         }
-        if link.send(&json!({ "t": "welcome", "name": hostname() })).is_err() {
+        if link
+            .send(&json!({ "t": "welcome", "name": hostname() }))
+            .is_err()
+        {
             return;
         }
         // The phone tapped last wins; the other one waits to be tapped.
@@ -291,7 +305,9 @@ impl Phone {
             }
         });
         while let Ok(Some(line)) = read_line(&mut reader) {
-            let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
             match msg["t"].as_str() {
                 Some("notif") => self.notify(&msg),
                 Some("notif_gone") => self.close(msg["key"].as_str().unwrap_or_default()),
@@ -341,8 +357,13 @@ impl Phone {
             )?;
             stream.write_all(body)
         };
-        if !same(given, &token) {
-            reply(&mut stream, "403 Forbidden", "text/plain", b"Scan the code Nexus shows.")?;
+        if !same(given, token) {
+            reply(
+                &mut stream,
+                "403 Forbidden",
+                "text/plain",
+                b"Scan the code Nexus shows.",
+            )?;
             return Ok(());
         }
         match path {
@@ -358,7 +379,12 @@ impl Phone {
 <h2>Nexus</h2><a class=p href="{intent}">Pair this phone</a><a class=s href="/nexus.apk?t={token}">Install the app first</a>
 <p style="opacity:.6;font-size:14px">Installed? Tap Pair, then grant the permissions the app lists.</p>"#
                 );
-                reply(&mut stream, "200 OK", "text/html; charset=utf-8", page.as_bytes())?;
+                reply(
+                    &mut stream,
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    page.as_bytes(),
+                )?;
             }
             "/nexus.apk" => match fs::read(apk()) {
                 Ok(bytes) => reply(
@@ -367,7 +393,12 @@ impl Phone {
                     "application/vnd.android.package-archive",
                     &bytes,
                 )?,
-                Err(_) => reply(&mut stream, "404 Not Found", "text/plain", b"Build the app first.")?,
+                Err(_) => reply(
+                    &mut stream,
+                    "404 Not Found",
+                    "text/plain",
+                    b"Build the app first.",
+                )?,
             },
             _ => reply(&mut stream, "404 Not Found", "text/plain", b"")?,
         }
@@ -376,7 +407,12 @@ impl Phone {
 
     /// Sends `op` to the phone and waits for its answer.
     pub fn request(&self, op: &str, args: Value) -> Result<Value> {
-        let link = self.link.lock().unwrap().clone().context("No phone is connected")?;
+        let link = self
+            .link
+            .lock()
+            .unwrap()
+            .clone()
+            .context("No phone is connected")?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = mpsc::channel();
         link.pending.lock().unwrap().insert(id, tx);
@@ -406,7 +442,10 @@ impl Phone {
                 let mut f = fs::File::create(&part)?;
                 let mut offset = 0;
                 loop {
-                    let r = p.request("read", json!({ "path": remote, "offset": offset, "len": CHUNK }))?;
+                    let r = p.request(
+                        "read",
+                        json!({ "path": remote, "offset": offset, "len": CHUNK }),
+                    )?;
                     let bytes = gtk::glib::base64_decode(r["b64"].as_str().unwrap_or_default());
                     f.write_all(&bytes)?;
                     offset += bytes.len() as u64;
@@ -442,7 +481,10 @@ impl Phone {
                         break;
                     }
                     let b64 = gtk::glib::base64_encode(&buf[..n]);
-                    p.request("write", json!({ "path": remote, "offset": offset, "b64": b64.as_str() }))?;
+                    p.request(
+                        "write",
+                        json!({ "path": remote, "offset": offset, "b64": b64.as_str() }),
+                    )?;
                     offset += n as u64;
                     if n == 0 {
                         break;
@@ -462,7 +504,15 @@ impl Phone {
             .get_or_init(|| zbus::blocking::Connection::session().ok())
             .as_ref()
     }
-    fn post(&self, app: &str, icon: &str, summary: &str, body: &str, replaces: u32, phone: bool) -> Option<u32> {
+    fn post(
+        &self,
+        app: &str,
+        icon: &str,
+        summary: &str,
+        body: &str,
+        replaces: u32,
+        phone: bool,
+    ) -> Option<u32> {
         let mut hints: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
         if phone {
             hints.insert("x-nexus-phone", true.into());
@@ -474,7 +524,16 @@ impl Phone {
                 "/org/freedesktop/Notifications",
                 Some("org.freedesktop.Notifications"),
                 "Notify",
-                &(app, replaces, icon, summary, body, Vec::<&str>::new(), hints, -1i32),
+                &(
+                    app,
+                    replaces,
+                    icon,
+                    summary,
+                    body,
+                    Vec::<&str>::new(),
+                    hints,
+                    -1i32,
+                ),
             )
             .ok()?;
         reply.body().deserialize::<u32>().ok()
@@ -544,14 +603,19 @@ impl Phone {
             .member("NotificationClosed")?
             .build();
         for msg in zbus::blocking::MessageIterator::for_match_rule(rule, &bus, None)? {
-            let Ok((id, reason)) = msg?.body().deserialize::<(u32, u32)>() else { continue };
+            let Ok((id, reason)) = msg?.body().deserialize::<(u32, u32)>() else {
+                continue;
+            };
             // 2: dismissed by the user.
             if reason != 2 {
                 continue;
             }
             let key = {
                 let mut shown = self.shown.lock().unwrap();
-                let key = shown.iter().find(|(_, v)| v.0 == id).map(|(k, _)| k.clone());
+                let key = shown
+                    .iter()
+                    .find(|(_, v)| v.0 == id)
+                    .map(|(k, _)| k.clone());
                 if let Some(k) = &key {
                     shown.remove(k);
                     save_seen(&shown);
