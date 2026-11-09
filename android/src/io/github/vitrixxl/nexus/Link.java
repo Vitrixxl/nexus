@@ -3,6 +3,8 @@ package io.github.vitrixxl.nexus;
 import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -20,13 +22,17 @@ import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.StatFs;
 import android.os.SystemClock;
 import android.provider.ContactsContract;
 import android.provider.Telephony;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
+import android.telecom.TelecomManager;
 import android.telephony.SmsManager;
+import android.telephony.TelephonyManager;
 import android.util.Base64;
 import android.util.Size;
 
@@ -100,10 +106,89 @@ public class Link extends NotificationListenerService {
         l.sync();
     }
 
+    /** Names the paired desktop `id`, without touching its link. */
+    static void rename(Context c, String id, String name) {
+        JSONArray list = pairs(c);
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject p = list.optJSONObject(i);
+            if (p != null && p.optString("id").equals(id)) try { p.put("name", name); } catch (Exception ignored) {}
+        }
+        c.getSharedPreferences("pair", MODE_PRIVATE).edit().putString("list", list.toString()).apply();
+    }
+
     static void savePairs(Context c, JSONArray list) {
         c.getSharedPreferences("pair", MODE_PRIVATE).edit().putString("list", list.toString()).apply();
         Link l = self;
         if (l != null) l.sync();
+    }
+
+    /**
+     * Puts `text` on the connected desktop's clipboard; says how it went.
+     * Android lets only the app in front read the clipboard, so this comes
+     * from {@link Send}: a share, or the Quick Settings tile.
+     */
+    static String sendClip(String text) {
+        Link l = self;
+        if (l != null) for (Conn c : l.conns.values()) {
+            if (c.connected()) {
+                l.pool.execute(() -> { try { c.send(new JSONObject().put("t", "clip").put("text", text)); } catch (Exception ignored) {} });
+                return "Copied on " + c.name;
+            }
+        }
+        return "No desktop is connected";
+    }
+
+    /** What the desktop copied, on this phone's clipboard. */
+    private volatile String pendingClip;
+    private final android.content.BroadcastReceiver unlocked = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            String text = pendingClip;
+            pendingClip = null;
+            if (text != null) try { setClip(text); } catch (Exception ignored) {}
+        }
+    };
+
+    /**
+     * What the desktop copied, on this phone's clipboard; while the phone is
+     * locked, once it unlocks. Says which, or throws what Android refused.
+     */
+    private String setClip(String text) throws Exception {
+        if (getSystemService(android.app.KeyguardManager.class).isKeyguardLocked()) {
+            pendingClip = text;
+            return "pending";
+        }
+        java.util.concurrent.FutureTask<Void> task = new java.util.concurrent.FutureTask<>(() -> {
+            getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Nexus", text));
+            return null;
+        });
+        new Handler(Looper.getMainLooper()).post(task);
+        task.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        return "copied";
+    }
+
+    private static NotesStore notes;
+    /** The notes, kept in step with the desktop by its daemon. */
+    static synchronized NotesStore notes(Context c) {
+        if (notes == null) notes = new NotesStore(new File(c.getApplicationContext().getFilesDir(), "notes"));
+        return notes;
+    }
+    /** What the desktop last said of the notes sync: {on, busy, last, conflicts, error}, and which desktop. */
+    static volatile JSONObject notesState;
+    static volatile String notesDesktop = "";
+
+    /** Asks the connected desktop to sync the notes soon. */
+    static void notesChanged() {
+        Link l = self;
+        if (l != null) for (Conn c : l.conns.values()) {
+            if (c.connected()) l.pool.execute(() -> { try { c.send(new JSONObject().put("t", "notes_changed")); } catch (Exception ignored) {} });
+        }
+    }
+
+    /** The connected desktop's name, or null. */
+    static String connectedDesktop() {
+        Link l = self;
+        if (l != null) for (Conn c : l.conns.values()) if (c.connected()) return c.name;
+        return null;
     }
 
     /** What each desktop's link is doing, by id, for the app's screen. */
@@ -116,10 +201,19 @@ public class Link extends NotificationListenerService {
 
     @Override public void onListenerConnected() {
         self = this;
+        try { registerReceiver(unlocked, new IntentFilter(Intent.ACTION_USER_PRESENT)); } catch (Exception ignored) {}
+        // Chats that arrived while the listener was away, still in the shade.
+        pool.execute(() -> {
+            StatusBarNotification[] shown = getActiveNotifications();
+            if (shown != null) for (StatusBarNotification n : shown) Chats.record(this, n);
+        });
         sync();
     }
 
-    @Override public void onListenerDisconnected() { stopAll(); }
+    @Override public void onListenerDisconnected() {
+        stopAll();
+        try { unregisterReceiver(unlocked); } catch (Exception ignored) {}
+    }
     @Override public void onDestroy() { stopAll(); super.onDestroy(); }
 
     private void stopAll() {
@@ -219,6 +313,9 @@ public class Link extends NotificationListenerService {
                     }
                     status = "Connected";
                     backoff = 2000;
+                    // Paired from a pasted link, it knew only the address.
+                    String desktop = welcome.optString("name");
+                    if (!desktop.isEmpty() && name.equals(host)) rename(Link.this, id, desktop);
                     synchronized (sent) { sent.clear(); }
                     send(info());
                     StatusBarNotification[] active = getActiveNotifications();
@@ -229,6 +326,12 @@ public class Link extends NotificationListenerService {
                         String t = m.optString("t");
                         if (t.equals("ping")) {
                             pool.execute(() -> { try { send(info().put("t", "pong")); } catch (Exception ignored) {} });
+                        } else if (t.equals("clip")) {
+                            String text = m.optString("text");
+                            pool.execute(() -> { try { setClip(text); } catch (Exception ignored) {} });
+                        } else if (t.equals("notes_state")) {
+                            notesState = m.optJSONObject("state");
+                            notesDesktop = name;
                         } else if (t.equals("req")) {
                             pool.execute(() -> respond(m));
                         } else if (t.equals("bye")) {
@@ -310,9 +413,26 @@ public class Link extends NotificationListenerService {
                 if (!new File(a.getString("path")).renameTo(new File(a.getString("to")))) throw new Exception("Could not rename");
                 return new JSONObject();
             case "thumb": return thumb(a.getString("path"), a.optInt("size", 256));
+            case "notes_list": return notes(this).list();
+            case "notes_read": return notes(this).read(a.getString("path"), a.optLong("offset"), a.optInt("len", NotesStore.CHUNK));
+            case "notes_write": notes(this).write(a.getString("path"), a.optLong("offset"), a.optString("b64")); return new JSONObject();
+            case "notes_commit": notes(this).commit(a.getString("path"), a.getString("hash"), a.optString("expect")); return new JSONObject();
+            case "notes_trash": notes(this).trash(a.getString("path"), a.getString("expect"), a.getString("stamp")); return new JSONObject();
+            case "notes_move": notes(this).move(a.getString("path"), a.getString("to"), a.getString("expect")); return new JSONObject();
             case "info": return info();
-            case "sms_threads": return threads();
-            case "sms_list": return messages(a.getLong("thread"));
+            case "sms_threads": return threads(a.optString("stamp"));
+            case "sms_list": return messages(a.getLong("thread"), a.optString("name"), a.optLong("since"));
+            case "call": return placeCall(a.getString("to"));
+            case "call_end":
+                if (!getSystemService(TelecomManager.class).endCall()) throw new Exception("No call to hang up");
+                return new JSONObject();
+            case "call_state": {
+                int s = getSystemService(TelephonyManager.class).getCallState();
+                return new JSONObject().put("state", s == TelephonyManager.CALL_STATE_IDLE ? "idle" : s == TelephonyManager.CALL_STATE_RINGING ? "ringing" : "active");
+            }
+            case "screen_shot": case "screen_tree": case "screen_tap": case "screen_hold": case "screen_swipe":
+            case "screen_text": case "screen_key": case "screen_apps": case "screen_open": case "cast_start":
+                return Control.op(op, a);
             case "sms_send": {
                 SmsManager sms = Build.VERSION.SDK_INT >= 31 ? getSystemService(SmsManager.class) : SmsManager.getDefault();
                 sms.sendMultipartTextMessage(a.getString("to"), null, sms.divideMessage(a.getString("body")), null, null);
@@ -321,6 +441,7 @@ public class Link extends NotificationListenerService {
             case "dismiss":
                 cancelNotification(a.getString("key"));
                 return new JSONObject();
+            case "mms_put": case "mms_send": case "mms_read": return Mms.op(this, op, a);
             default: throw new Exception("unknown op");
         }
     }
@@ -404,21 +525,115 @@ public class Link extends NotificationListenerService {
         } catch (Exception e) { return 0; }
     }
 
-    private JSONObject threads() throws Exception {
-        Map<Long, JSONObject> byThread = new LinkedHashMap<>();
+    /** The newest first, from SMS, MMS and the chats kept from notifications. */
+    /** Numbers only: `tel:` would also run carrier codes such as call forwarding. */
+    private JSONObject placeCall(String to) throws Exception {
+        if (!to.matches("\\+?[0-9 ().-]{2,32}")) throw new Exception("That isn't a phone number");
+        if (checkSelfPermission(android.Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED)
+            throw new Exception("Open Nexus on the phone and allow phone calls");
+        getSystemService(TelecomManager.class).placeCall(Uri.fromParts("tel", to.replaceAll("[ ().-]", ""), null), null);
+        return new JSONObject();
+    }
+
+    private int rows(Uri uri, String where, String... args) {
+        try (Cursor c = getContentResolver().query(uri, new String[]{"_id"}, where, args, null)) {
+            return c == null ? 0 : c.getCount();
+        } catch (Exception e) { return 0; }
+    }
+
+    private long newest(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[]{"date"}, null, null, "date DESC LIMIT 1")) {
+            return c != null && c.moveToFirst() ? c.getLong(0) : 0;
+        } catch (Exception e) { return 0; }
+    }
+
+    /** Changes whenever the conversation list could. */
+    private String stamp() {
+        JSONArray chats = Chats.snapshot(this);
+        long chat = 0;
+        for (int i = 0; i < chats.length(); i++) chat = Math.max(chat, chats.optJSONObject(i).optLong("time"));
+        return newest(Telephony.Sms.CONTENT_URI) + ":" + newest(Telephony.Mms.CONTENT_URI) + ":" + rows(Telephony.Sms.CONTENT_URI, null)
+                + ":" + rows(Telephony.Mms.CONTENT_URI, null) + ":" + chats.length() + ":" + chat;
+    }
+
+    /** The conversations, or just `same` when the desktop's `known` list is current. */
+    private JSONObject threads(String known) throws Exception {
+        String stamp = stamp();
+        if (stamp.equals(known)) return new JSONObject().put("same", true);
+        Map<Long, JSONObject> byThread = new HashMap<>();
         try (Cursor c = getContentResolver().query(Telephony.Sms.CONTENT_URI,
                 new String[]{"thread_id", "address", "body", "date"}, null, null, "date DESC")) {
-            while (c != null && c.moveToNext() && byThread.size() < 50) {
-                long thread = c.getLong(0);
-                if (byThread.containsKey(thread)) continue;
-                String address = c.getString(1) == null ? "" : c.getString(1);
-                byThread.put(thread, new JSONObject().put("thread", thread).put("address", address)
-                        .put("name", contact(address)).put("snippet", c.getString(2)).put("date", c.getLong(3)));
+            while (c != null && c.moveToNext() && byThread.size() < 60) {
+                offer(byThread, c.getLong(0), c.getString(1), c.getString(2), c.getLong(3));
             }
         }
+        try (Cursor c = getContentResolver().query(Telephony.Mms.CONTENT_URI,
+                new String[]{"_id", "thread_id", "date"}, null, null, "date DESC LIMIT 200")) {
+            while (c != null && c.moveToNext()) {
+                long id = c.getLong(0), thread = c.getLong(1), date = c.getLong(2) * 1000;
+                JSONObject t = byThread.get(thread);
+                if (t != null && t.optLong("date") >= date) continue;
+                String text = mmsText(id);
+                offer(byThread, thread, t != null ? t.optString("address") : mmsAddress(id), text.isEmpty() ? "Attachment" : text, date);
+            }
+        } catch (Exception ignored) {}
+        Map<String, JSONObject> byName = new HashMap<>();
+        for (JSONObject t : byThread.values()) {
+            String name = contact(t.optString("address"));
+            t.put("name", name);
+            byName.put(name.isEmpty() ? t.optString("address") : name, t);
+        }
+        JSONArray chats = Chats.snapshot(this);
+        for (int i = 0; i < chats.length(); i++) {
+            JSONObject m = chats.getJSONObject(i);
+            String conv = m.optString("conv");
+            JSONObject t = byName.get(conv);
+            if (t == null) {
+                // A chat without SMS: no number to answer to.
+                t = new JSONObject().put("thread", -1L - (conv.hashCode() & 0x7fffffffL)).put("address", "").put("name", conv).put("date", 0L);
+                byName.put(conv, t);
+                byThread.put(t.getLong("thread"), t);
+            }
+            if (m.optLong("time") >= t.optLong("date")) t.put("snippet", m.optString("text")).put("date", m.optLong("time"));
+        }
+        java.util.List<JSONObject> sorted = new java.util.ArrayList<>(byThread.values());
+        sorted.sort((a, b) -> Long.compare(b.optLong("date"), a.optLong("date")));
         JSONArray list = new JSONArray();
-        for (JSONObject t : byThread.values()) list.put(t);
-        return new JSONObject().put("threads", list);
+        for (JSONObject t : sorted.subList(0, Math.min(60, sorted.size()))) list.put(t);
+        return new JSONObject().put("threads", list).put("stamp", stamp);
+    }
+
+    private static void offer(Map<Long, JSONObject> byThread, long thread, String address, String snippet, long date) {
+        JSONObject t = byThread.get(thread);
+        if (t != null && t.optLong("date") >= date) return;
+        try {
+            byThread.put(thread, new JSONObject().put("thread", thread).put("address", address == null ? "" : address)
+                    .put("snippet", snippet == null ? "" : snippet).put("date", date));
+        } catch (Exception ignored) {}
+    }
+
+    /** An MMS's sender, or for one this phone sent, its first recipient. */
+    private String mmsAddress(long id) {
+        try (Cursor c = getContentResolver().query(Uri.parse("content://mms/" + id + "/addr"),
+                new String[]{"address", "type"}, null, null, null)) {
+            String to = "";
+            while (c != null && c.moveToNext()) {
+                String a = c.getString(0);
+                if (a == null || a.equals("insert-address-token")) continue;
+                if (c.getInt(1) == 137) return a;
+                if (to.isEmpty()) to = a;
+            }
+            return to;
+        } catch (Exception e) { return ""; }
+    }
+
+    private String mmsText(long id) {
+        StringBuilder text = new StringBuilder();
+        try (Cursor c = getContentResolver().query(Uri.parse("content://mms/part"),
+                new String[]{"text"}, "mid = ? AND ct = 'text/plain'", new String[]{String.valueOf(id)}, null)) {
+            while (c != null && c.moveToNext()) if (c.getString(0) != null) text.append(c.getString(0));
+        } catch (Exception ignored) {}
+        return text.toString();
     }
 
     private String contact(String address) {
@@ -429,21 +644,58 @@ public class Link extends NotificationListenerService {
         } catch (Exception e) { return ""; }
     }
 
-    private JSONObject messages(long thread) throws Exception {
-        JSONArray list = new JSONArray();
-        try (Cursor c = getContentResolver().query(Telephony.Sms.CONTENT_URI, new String[]{"body", "date", "type"},
-                "thread_id = ?", new String[]{String.valueOf(thread)}, "date DESC LIMIT 100")) {
-            while (c != null && c.moveToNext()) {
-                list.put(new JSONObject().put("body", c.getString(0)).put("date", c.getLong(1))
-                        .put("out", c.getInt(2) != Telephony.Sms.MESSAGE_TYPE_INBOX));
+    /**
+     * A conversation, oldest first: SMS, MMS, then chats kept under `name`,
+     * from `since` on. Looks 90 s further back, to spot the duplicates below.
+     * `count` lets the desktop notice messages deleted here.
+     */
+    private JSONObject messages(long thread, String name, long since) throws Exception {
+        java.util.List<JSONObject> all = new java.util.ArrayList<>();
+        long from = since - 90000;
+        String id = String.valueOf(thread);
+        if (thread > 0) {
+            try (Cursor c = getContentResolver().query(Telephony.Sms.CONTENT_URI, new String[]{"body", "date", "type", "_id"},
+                    "thread_id = ? AND date >= ?", new String[]{id, String.valueOf(from)}, "date DESC LIMIT 200")) {
+                while (c != null && c.moveToNext()) {
+                    all.add(new JSONObject().put("id", "s" + c.getLong(3)).put("body", c.getString(0)).put("date", c.getLong(1))
+                            .put("out", c.getInt(2) != Telephony.Sms.MESSAGE_TYPE_INBOX).put("status", Mms.smsStatus(c.getInt(2))));
+                }
+            }
+            try (Cursor c = getContentResolver().query(Telephony.Mms.CONTENT_URI, new String[]{"_id", "date", "msg_box"},
+                    "thread_id = ? AND date >= ?", new String[]{id, String.valueOf(from / 1000)}, "date DESC LIMIT 100")) {
+                while (c != null && c.moveToNext()) {
+                    all.add(new JSONObject().put("id", "m" + c.getLong(0)).put("body", mmsText(c.getLong(0))).put("date", c.getLong(1) * 1000)
+                            .put("out", c.getInt(2) != Telephony.Mms.MESSAGE_BOX_INBOX).put("status", Mms.mmsStatus(c.getInt(2)))
+                            .put("parts", Mms.parts(this, c.getLong(0))));
+                }
+            } catch (Exception ignored) {}
+        }
+        if (!name.isEmpty()) {
+            JSONArray chats = Chats.snapshot(this);
+            for (int i = 0; i < chats.length(); i++) {
+                JSONObject m = chats.getJSONObject(i);
+                if (!m.optString("conv").equals(name) || m.optLong("time") < from) continue;
+                all.add(new JSONObject().put("id", "c" + m.optLong("time")).put("body", m.optString("text")).put("date", m.optLong("time")).put("out", m.optBoolean("out")));
             }
         }
-        JSONArray oldestFirst = new JSONArray();
-        for (int i = list.length() - 1; i >= 0; i--) oldestFirst.put(list.get(i));
-        return new JSONObject().put("messages", oldestFirst);
+        all.sort((a, b) -> Long.compare(a.optLong("date"), b.optLong("date")));
+        // A chat message may also be in the SMS store: the same text within a minute and a half.
+        JSONArray list = new JSONArray();
+        JSONObject last = null;
+        for (JSONObject m : all) {
+            if (last != null && !m.optString("body").isEmpty() && last.optString("body").equals(m.optString("body"))
+                    && m.optLong("date") - last.optLong("date") < 90000) continue;
+            if (m.optLong("date") >= since) list.put(m);
+            last = m;
+        }
+        JSONArray newest = new JSONArray();
+        for (int i = Math.max(0, list.length() - 300); i < list.length(); i++) newest.put(list.get(i));
+        int count = thread <= 0 ? 0 : rows(Telephony.Sms.CONTENT_URI, "thread_id = ?", id) + rows(Telephony.Mms.CONTENT_URI, "thread_id = ?", id);
+        return new JSONObject().put("messages", newest).put("count", count);
     }
 
     @Override public void onNotificationPosted(StatusBarNotification n) {
+        pool.execute(() -> Chats.record(this, n));
         for (Conn c : conns.values()) if (c.connected()) pool.execute(() -> post(c, n));
     }
 

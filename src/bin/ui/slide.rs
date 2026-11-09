@@ -1,15 +1,78 @@
-//! Holds its child where its parent puts it, shifted by an offset without
-//! moving anything else: a popup card swiped away, the notification panel
-//! flying in from the corner.
+//! Holds its child where its parent puts it, posed by springs without moving
+//! anything else: a panel opening under the bar, a popup card swiped away, the
+//! pill behind the active workspace.
 use gtk::{glib, gsk, prelude::*, subclass::prelude::*};
 use std::cell::{Cell, RefCell};
+
+/// Where the child stands, relative to its allocation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pose {
+    pub x: f32,
+    pub y: f32,
+    pub opacity: f32,
+}
+impl Pose {
+    pub const REST: Self = Self {
+        x: 0.,
+        y: 0.,
+        opacity: 1.,
+    };
+    fn channels(self) -> [f32; 3] {
+        [self.x, self.y, self.opacity]
+    }
+    fn from_channels([x, y, opacity]: [f32; 3]) -> Self {
+        Self { x, y, opacity }
+    }
+}
+impl Default for Pose {
+    fn default() -> Self {
+        Self::REST
+    }
+}
+/// A spring in SwiftUI's terms: how long a swing takes, in seconds, and how
+/// little it overshoots (1 settles without overshooting).
+#[derive(Clone, Copy)]
+pub struct Spring {
+    pub response: f32,
+    pub damping: f32,
+}
+/// Things arriving: quick, and still without passing where they are going.
+pub const ARRIVE: Spring = Spring {
+    response: 0.15,
+    damping: 1.,
+};
+/// Things leaving, quickly and without bouncing.
+pub const LEAVE: Spring = Spring {
+    response: 0.1,
+    damping: 1.,
+};
+/// Controls following a choice, like the workspace pill.
+pub const SNAP: Spring = Spring {
+    response: 0.13,
+    damping: 1.,
+};
+/// One step of a damped spring toward `target`, stable whatever the frame rate.
+pub fn step(spring: Spring, value: f32, velocity: f32, target: f32, dt: f32) -> (f32, f32) {
+    let (mut value, mut velocity) = (value, velocity);
+    let omega = std::f32::consts::TAU / spring.response.max(0.01);
+    const SUBSTEP: f32 = 1. / 960.;
+    let mut left = dt.min(0.05);
+    while left > 0. {
+        let h = left.min(SUBSTEP);
+        velocity += (omega * omega * (target - value) - 2. * spring.damping * omega * velocity) * h;
+        value += velocity * h;
+        left -= h;
+    }
+    (value, velocity)
+}
 
 mod imp {
     use super::*;
     #[derive(Default)]
     pub struct Slide {
-        pub offset: Cell<(f32, f32)>,
-        /// Bumped by every glide or drag, so that an older glide stops.
+        pub pose: Cell<Pose>,
+        pub velocity: Cell<[f32; 3]>,
+        /// Bumped by every spring or drag, so that an older motion stops.
         pub motion: Cell<u32>,
         /// The width its height is measured at when none is given.
         pub width: Cell<i32>,
@@ -44,8 +107,11 @@ mod imp {
         }
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             if let Some(child) = self.obj().first_child() {
-                let (x, y) = self.offset.get();
-                let shift = gsk::Transform::new().translate(&gtk::graphene::Point::new(x, y));
+                let pose = self.pose.get();
+                // Translation only: under any other scale GSK rasterizes the text
+                // anew on every frame, three times the work of the whole frame.
+                let shift =
+                    gsk::Transform::new().translate(&gtk::graphene::Point::new(pose.x, pose.y));
                 child.allocate(width, height, baseline, Some(shift));
             }
         }
@@ -79,46 +145,94 @@ impl Slide {
         let (_, height, _, _) = self.measure(gtk::Orientation::Vertical, width);
         (width as f32, height as f32)
     }
-    /// Moves the child at once, stopping any glide.
-    pub fn drag_to(&self, x: f32, y: f32) {
-        let motion = &self.imp().motion;
-        motion.set(motion.get().wrapping_add(1));
-        self.set_offset(x, y);
+    pub fn pose(&self) -> Pose {
+        self.imp().pose.get()
     }
-    /// The child fades as it moves its own size away.
-    fn set_offset(&self, x: f32, y: f32) {
-        self.imp().offset.set((x, y));
-        let (width, height) = self.natural_size();
-        let away = (x.abs() / width.max(1.)).max(y.abs() / height.max(1.));
-        self.set_opacity(f64::from(1. - away.min(1.) * 0.7));
+    fn apply(&self, pose: Pose) {
+        self.imp().pose.set(pose);
+        self.set_opacity(f64::from(pose.opacity.clamp(0., 1.)));
         self.queue_allocate();
     }
-    /// Eases the child to `target` over `millis`, then calls `done`.
-    pub fn glide(&self, target: (f32, f32), millis: u32, done: impl FnOnce() + 'static) {
-        let from = self.imp().offset.get();
-        self.drag_to(from.0, from.1);
-        let motion = self.imp().motion.get();
-        let start = Cell::new(None::<i64>);
+    /// Puts the child there at once, stopping any motion.
+    pub fn place(&self, pose: Pose) {
+        let imp = self.imp();
+        imp.motion.set(imp.motion.get().wrapping_add(1));
+        imp.velocity.set([0.; 3]);
+        self.apply(pose);
+    }
+    /// Follows a finger: the child fades as it moves its own size away.
+    pub fn drag_to(&self, x: f32, y: f32) {
+        let (width, height) = self.natural_size();
+        let away = (x.abs() / width.max(1.)).max(y.abs() / height.max(1.));
+        self.place(Pose {
+            x,
+            y,
+            opacity: 1. - away.min(1.) * 0.7,
+        });
+    }
+    /// Springs to `target` from wherever the child is, keeping its speed when
+    /// it was already moving, then calls `done`.
+    pub fn spring_to(&self, target: Pose, spring: Spring, done: impl FnOnce() + 'static) {
+        let imp = self.imp();
+        imp.motion.set(imp.motion.get().wrapping_add(1));
+        let motion = imp.motion.get();
+        let last = Cell::new(None::<i64>);
         let done = RefCell::new(Some(done));
+        let goal = target.channels();
         self.add_tick_callback(move |slide, clock| {
-            if slide.imp().motion.get() != motion {
+            let imp = slide.imp();
+            if imp.motion.get() != motion {
                 return glib::ControlFlow::Break;
             }
-            let begun = *start.get().get_or_insert(clock.frame_time());
-            start.set(Some(begun));
-            let t = ((clock.frame_time() - begun) as f32 / (millis as f32 * 1000.)).min(1.);
-            let eased = 1. - (1. - t).powi(3);
-            slide.set_offset(
-                from.0 + (target.0 - from.0) * eased,
-                from.1 + (target.1 - from.1) * eased,
-            );
-            if t < 1. {
+            let now = clock.frame_time();
+            let dt = last
+                .replace(Some(now))
+                .map_or(0., |t| (now - t) as f32 / 1e6);
+            let mut values = imp.pose.get().channels();
+            let mut speeds = imp.velocity.get();
+            let mut settled = true;
+            for i in 0..3 {
+                (values[i], speeds[i]) = step(spring, values[i], speeds[i], goal[i], dt);
+                // Pixels for the first two, a fraction for opacity.
+                let epsilon = if i < 2 { 0.2 } else { 0.002 };
+                settled &= (values[i] - goal[i]).abs() < epsilon && speeds[i].abs() < epsilon * 8.;
+            }
+            if !settled {
+                imp.velocity.set(speeds);
+                slide.apply(Pose::from_channels(values));
                 return glib::ControlFlow::Continue;
             }
+            imp.velocity.set([0.; 3]);
+            slide.apply(target);
             if let Some(done) = done.take() {
                 done();
             }
             glib::ControlFlow::Break
         });
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn run(spring: Spring, hz: f32) -> (f32, f32) {
+        let (mut value, mut speed, mut peak) = (0f32, 0f32, 0f32);
+        for _ in 0..(2. * hz) as usize {
+            (value, speed) = step(spring, value, speed, 1., 1. / hz);
+            peak = peak.max(value);
+        }
+        (value, peak)
+    }
+    #[test]
+    fn springs_settle_alike_at_any_frame_rate() {
+        for hz in [30., 60., 144., 240.] {
+            // Critically damped: never past the target.
+            for spring in [ARRIVE, LEAVE, SNAP] {
+                let (end, peak) = run(spring, hz);
+                assert!(
+                    (end - 1.).abs() < 0.001 && peak <= 1.0001,
+                    "{hz} Hz: {end} {peak}"
+                );
+            }
+        }
     }
 }

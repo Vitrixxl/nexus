@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Nexus" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:colorAccent">#0A84FF</item>
+        <item name="android:windowBackground">#141416</item>
+    </style>
+</resources>

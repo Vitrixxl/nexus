@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Messages
+Comment=Read and send your phone's text messages
+Exec=nexus messages
+Icon=mail-message-new-symbolic
+Terminal=false
+Categories=Network;Chat;
+StartupWMClass=io.github.vitrixxl.NexusMessages

@@ -22,6 +22,7 @@ const NM: &str = "org.freedesktop.NetworkManager";
 const NM_PATH: &str = "/org/freedesktop/NetworkManager";
 const NM_DEVICE: &str = "org.freedesktop.NetworkManager.Device";
 const NM_WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
+const NM_WIRED: &str = "org.freedesktop.NetworkManager.Device.Wired";
 const NM_ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const NM_SETTINGS: &str = "org.freedesktop.NetworkManager.Settings";
 const NM_CONNECTION: &str = "org.freedesktop.NetworkManager.Settings.Connection";
@@ -176,6 +177,38 @@ pub enum BluetoothError {
     #[zbus(error)]
     ZBus(zbus::Error),
 }
+/// What BlueZ calls `device`. A connection of its own: the agent has none at hand,
+/// and this happens once per pairing prompt.
+async fn device_name(device: &OwnedObjectPath) -> String {
+    let alias = async {
+        let bus = zbus::Connection::system().await?;
+        let reply = bus
+            .call_method(
+                Some("org.bluez"),
+                device.as_str(),
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &("org.bluez.Device1", "Alias"),
+            )
+            .await?;
+        let body = reply.body();
+        let alias: zbus::zvariant::Value = body.deserialize()?;
+        zbus::Result::Ok(<&str>::try_from(&alias).unwrap_or_default().to_owned())
+    }
+    .await;
+    device_label(alias.as_deref().unwrap_or_default(), device.as_str())
+}
+/// The alias on one line, since any device nearby picks its own, or else the address
+/// that BlueZ's path `…/dev_AA_BB_CC_DD_EE_FF` spells out.
+fn device_label(alias: &str, path: &str) -> String {
+    let alias = alias.trim();
+    if alias.is_empty() {
+        let address = path.rsplit('/').next().unwrap_or_default();
+        address.trim_start_matches("dev_").replace('_', ":")
+    } else {
+        alias.replace(['\n', '\r'], " ")
+    }
+}
 pub struct BluetoothAgent(pub Arc<Prompts>);
 impl BluetoothAgent {
     async fn ask(
@@ -187,10 +220,7 @@ impl BluetoothAgent {
         self.0
             .ask(
                 "Bluetooth pairing".into(),
-                format!(
-                    "{detail}\n{}",
-                    device.as_str().rsplit('/').next().unwrap_or_default()
-                ),
+                format!("{detail}\n{}", device_name(&device).await),
                 fields,
             )
             .await
@@ -338,6 +368,25 @@ fn device_state(state: u32) -> &'static str {
         _ => "",
     }
 }
+/// The first wired adapter NetworkManager manages, and its object path.
+fn wired_device(objects: &Objects) -> Option<(OwnedObjectPath, Wired)> {
+    let mut devices: Vec<_> = objects
+        .iter()
+        .filter_map(|(path, o)| Some((path, o.get(NM_DEVICE)?, o.get(NM_WIRED)?)))
+        // 10: unmanaged, as containers' virtual cables are.
+        .filter(|(_, device, _)| number(device, "State") != 10)
+        .collect();
+    devices.sort_by_key(|(path, ..)| path.to_string());
+    let (path, device, wired) = devices.into_iter().next()?;
+    Some((
+        path.clone(),
+        Wired {
+            name: string(device, "Interface"),
+            state: device_state(number(device, "State")).into(),
+            cable: boolean(wired, "Carrier"),
+        },
+    ))
+}
 /// The Wi-Fi device, as NetworkManager sees it in one pass.
 struct Radio {
     enabled: bool,
@@ -400,7 +449,14 @@ impl Backend {
         })
     }
     fn proxy<'a>(&'a self, dest: &'a str, path: &'a str, interface: &'a str) -> Result<Proxy<'a>> {
-        Ok(Proxy::new(&self.connection, dest, path, interface)?)
+        // Without this, each one asks for all its properties and subscribes to their
+        // changes, for nothing: these live for one call.
+        Ok(zbus::blocking::proxy::Builder::new(&self.connection)
+            .destination(dest)?
+            .path(path)?
+            .interface(interface)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()?)
     }
     pub fn register_agents(&self) {
         // Fails harmlessly when this connection is already registered.
@@ -459,11 +515,17 @@ impl Backend {
             .map(|(_, path, ssid)| (path, ssid))
             .collect())
     }
-    fn radio(&self) -> Result<Radio> {
-        let objects: Objects = self
-            .proxy(NM, "/org/freedesktop", "org.freedesktop.DBus.ObjectManager")?
+    fn nm_objects(&self) -> Result<Objects> {
+        self.proxy(NM, "/org/freedesktop", "org.freedesktop.DBus.ObjectManager")?
             .call("GetManagedObjects", &())
-            .context("NetworkManager is not running")?;
+            .context("NetworkManager is not running")
+    }
+    /// The wired adapter, if there is one.
+    pub fn wired(&self) -> Result<Option<Wired>> {
+        Ok(wired_device(&self.nm_objects()?).map(|(_, w)| w))
+    }
+    fn radio(&self) -> Result<Radio> {
+        let objects = self.nm_objects()?;
         let manager = OwnedObjectPath::try_from(NM_PATH)?;
         let enabled = objects
             .get(&manager)
@@ -725,6 +787,27 @@ impl Backend {
         devices.sort_by_key(|d| (!d.connected, !d.paired, d.name.clone()));
         Ok((enabled, devices, discovering))
     }
+    /// The password NetworkManager keeps for the saved Wi-Fi network `id`.
+    pub fn wifi_password(&self, id: &str) -> Result<String> {
+        let radio = self.radio()?;
+        let profile = radio
+            .saved
+            .get(id)
+            .and_then(|p| p.first())
+            .context("This network is not saved")?;
+        let secrets: Settings = self
+            .proxy(NM, profile.as_str(), NM_CONNECTION)?
+            .call("GetSecrets", &("802-11-wireless-security",))
+            .context("This network has no password")?;
+        let security = secrets
+            .get("802-11-wireless-security")
+            .context("This network has no password")?;
+        ["psk", "wep-key0", "leap-password"]
+            .iter()
+            .map(|k| string(security, k))
+            .find(|p| !p.is_empty())
+            .context("This network has no password")
+    }
     pub fn action(&self, op: &str, target: &str, value: &str) -> Result<()> {
         match op {
             "wifi-power" => {
@@ -792,6 +875,60 @@ impl Backend {
                                 .call::<_, _, ()>("Delete", &())?;
                         }
                     }
+                }
+            }
+            // Which link to be on: "ethernet", "wifi" or "both". The new one
+            // comes up before the other goes, so the connection never drops.
+            "network-use" => {
+                let objects = self.nm_objects()?;
+                let (wired, _) = wired_device(&objects).context("No Ethernet adapter found")?;
+                let radio = self.radio()?;
+                let state = |path: &OwnedObjectPath| {
+                    objects
+                        .get(path)
+                        .and_then(|o| o.get(NM_DEVICE))
+                        .map_or(0, |d| number(d, "State"))
+                };
+                let manager = self.proxy(NM, NM_PATH, NM)?;
+                let root = ObjectPath::try_from("/")?;
+                let up = |device: &OwnedObjectPath| -> Result<()> {
+                    if !(40..=100).contains(&state(device)) {
+                        // "/": the best profile NetworkManager has for it.
+                        let _: OwnedObjectPath =
+                            manager.call("ActivateConnection", &(&root, device, &root))?;
+                    }
+                    Ok(())
+                };
+                let down = |device: &OwnedObjectPath| -> Result<()> {
+                    if (40..=100).contains(&state(device)) {
+                        self.proxy(NM, device.as_str(), NM_DEVICE)?
+                            .call::<_, _, ()>("Disconnect", &())?;
+                    }
+                    Ok(())
+                };
+                let wifi = |b: &Self| -> Result<()> {
+                    if radio.enabled {
+                        b.register_agents();
+                        up(&radio.device)
+                    } else {
+                        // Once on, it joins a known network by itself.
+                        Ok(manager.set_property("WirelessEnabled", true)?)
+                    }
+                };
+                match value {
+                    "ethernet" => {
+                        up(&wired)?;
+                        down(&radio.device)?;
+                    }
+                    "wifi" => {
+                        wifi(self)?;
+                        down(&wired)?;
+                    }
+                    "both" => {
+                        up(&wired)?;
+                        wifi(self)?;
+                    }
+                    _ => bail!("Unknown network choice"),
                 }
             }
             "bluetooth-power" => {
@@ -1023,6 +1160,8 @@ pub fn audio_devices(kind: &str) -> Result<Vec<AudioDevice>> {
     Ok(json
         .iter()
         .filter_map(|v| {
+            // What an output plays, listed as a source: no one's microphone.
+            v["name"].as_str().filter(|n| !n.ends_with(".monitor"))?;
             Some(AudioDevice {
                 name: v["name"].as_str()?.into(),
                 description: v["description"].as_str().unwrap_or("Audio device").into(),
@@ -1145,6 +1284,14 @@ mod tests {
         assert!(percent("42;shutdown").is_err());
         assert_eq!(percent("42").unwrap(), 42);
         assert!(parse_bool("yes").is_err());
+    }
+    #[test]
+    fn pairing_names_the_device() {
+        let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+        assert_eq!(device_label("WH-1000XM5", path), "WH-1000XM5");
+        assert_eq!(device_label("", path), "AA:BB:CC:DD:EE:FF");
+        assert_eq!(device_label("  ", path), "AA:BB:CC:DD:EE:FF");
+        assert_eq!(device_label("Trust\nme", path), "Trust me");
     }
     #[test]
     fn prompt_ids_are_checked() {

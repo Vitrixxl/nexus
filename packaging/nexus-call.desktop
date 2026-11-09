@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Call
+Comment=Place calls from your phone
+Exec=nexus call %u
+Icon=call-start-symbolic
+Terminal=false
+Categories=Network;Telephony;
+MimeType=x-scheme-handler/tel;
+StartupWMClass=io.github.vitrixxl.NexusCall

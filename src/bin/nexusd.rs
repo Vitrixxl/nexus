@@ -1,17 +1,76 @@
 use nexus_control::{backend::Backend, *};
 use std::{
-    io::{BufRead, BufReader, Write},
+    collections::HashMap,
+    io::{BufRead, BufReader},
     process::{Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard, TryLockError,
         atomic::{AtomicU64, AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
 };
+use zbus::zvariant::Value;
 /// Changes made through the daemon. A poll that read the system before one
 /// must not store what it read over the change's own read-back.
 static CHANGES: AtomicU64 = AtomicU64::new(0);
+/// When a client last worked with the radios, in seconds since the daemon started.
+static RADIOS_WATCHED: AtomicU64 = AtomicU64::new(0);
+/// Every network's properties are D-Bus calls: read them often only while someone
+/// is looking, which Control Center's pages say by asking for scans. Otherwise
+/// [`watch_bus`] wakes the poll when something happens; the slow read is for what
+/// says nothing, like signal strength.
+fn radio_pause(started: Instant) -> Duration {
+    let since = started
+        .elapsed()
+        .as_secs()
+        .saturating_sub(RADIOS_WATCHED.load(Ordering::Relaxed));
+    Duration::from_secs(if since < 30 { 2 } else { 20 })
+}
+/// Wakes a radio's poll when `rule` matches on the system bus.
+fn watch_bus(rule: zbus::MatchRule<'static>, wake: mpsc::Sender<()>) {
+    thread::spawn(move || {
+        loop {
+            let watch = || -> zbus::Result<()> {
+                let bus = zbus::blocking::Connection::system()?;
+                for message in
+                    zbus::blocking::MessageIterator::for_match_rule(rule.clone(), &bus, Some(8))?
+                {
+                    // Signal strength comes constantly during a scan, and is no event.
+                    let body = message?.body();
+                    let (_, changed, _): (String, HashMap<String, Value>, Vec<String>) =
+                        body.deserialize()?;
+                    if !changed.contains_key("RSSI") && wake.send(()).is_err() {
+                        break;
+                    }
+                }
+                Ok(())
+            };
+            if let Err(e) = watch() {
+                eprintln!("Could not follow the radios: {e}");
+            }
+            thread::sleep(Duration::from_secs(30));
+        }
+    });
+}
+/// A change on NetworkManager itself, not its access points whose signal changes
+/// all the time; or on a Bluetooth device.
+fn radio_changes(subsystem: u8) -> zbus::Result<zbus::MatchRule<'static>> {
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.DBus.Properties")?
+        .member("PropertiesChanged")?;
+    Ok(if subsystem == 0 {
+        rule.sender("org.freedesktop.NetworkManager")?
+            .path("/org/freedesktop/NetworkManager")?
+            .build()
+    } else {
+        rule.sender("org.bluez")?
+            .arg(0, "org.bluez.Device1")?
+            .build()
+    })
+}
 fn main() -> anyhow::Result<()> {
     let (listener, _lock) = match listener("daemon") {
         Ok(v) => v,
@@ -60,10 +119,18 @@ fn main() -> anyhow::Result<()> {
         });
     }
     // Each subsystem polls independently: a radio timeout never freezes sound or IPC.
-    for subsystem in 0..3 {
+    let started = Instant::now();
+    for subsystem in 0..3u8 {
         let b = backend.clone();
         let state = state.clone();
+        let (wake, woken) = mpsc::channel();
+        if subsystem < 2
+            && let Ok(rule) = radio_changes(subsystem)
+        {
+            watch_bus(rule, wake.clone());
+        }
         thread::spawn(move || {
+            let _awake = wake;
             // NetworkManager forgets its agents when it restarts.
             let mut reachable = true;
             loop {
@@ -78,21 +145,12 @@ fn main() -> anyhow::Result<()> {
                     1 => poll_bluetooth(&b, &state),
                     _ => poll_light(&state),
                 }
-                thread::sleep(Duration::from_secs(2));
-            }
-        });
-    }
-    // Discovery is independent of cached status and user mutations. Each scan
-    // rechecks the radio state, and a slow service cannot delay the other radio.
-    for op in ["wifi-scan", "bluetooth-scan"] {
-        let backend = backend.clone();
-        thread::spawn(move || {
-            loop {
-                let started = Instant::now();
-                if let Err(e) = backend.action(op, "", "") {
-                    eprintln!("Automatic {op}: {e}");
-                }
-                thread::sleep(Duration::from_secs(15).saturating_sub(started.elapsed()));
+                let _ = woken.recv_timeout(if subsystem == 2 {
+                    Duration::from_secs(2)
+                } else {
+                    radio_pause(started)
+                });
+                while woken.try_recv().is_ok() {}
             }
         });
     }
@@ -203,6 +261,11 @@ fn main() -> anyhow::Result<()> {
                                 phone.disconnect();
                                 Ok(serde_json::Value::Null)
                             }
+                            "clipboard" => Ok(serde_json::to_value(phone.clipboard())?),
+                            "notes_sync" => {
+                                phone.set_notes_sync(args["on"].as_bool().unwrap_or(true));
+                                Ok(serde_json::Value::Null)
+                            }
                             "pull" => {
                                 let dir = match arg("dest") {
                                     d if !d.is_empty() => d.into(),
@@ -218,6 +281,18 @@ fn main() -> anyhow::Result<()> {
                                 phone.push(arg("src").into(), arg("dir"));
                                 Ok(serde_json::Value::Null)
                             }
+                            "mms_send" => {
+                                let files: Vec<std::path::PathBuf> = args["files"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|f| f.as_str().map(Into::into))
+                                    .collect();
+                                phone.send_mms(&arg("to"), &arg("body"), &files)
+                            }
+                            "mms_part" => phone
+                                .mms_part(args["part"].as_i64().unwrap_or_default(), &arg("name"))
+                                .map(|p| serde_json::json!({ "path": p })),
                             _ => phone.request(&op, args),
                         };
                         match result {
@@ -234,8 +309,30 @@ fn main() -> anyhow::Result<()> {
                         values,
                         accepted,
                     } => Reply::result(b.prompts.answer(id, values, accepted)),
-                    Request::Action { op, target, value } => match mutations.try_lock() {
-                        Ok(_guard) => {
+                    Request::Action { op, target, .. } if op == "wifi-password" => {
+                        match b.wifi_password(&target) {
+                            Ok(password) => Reply {
+                                data: Some(password.into()),
+                                ..Reply::result(Ok(()))
+                            },
+                            Err(e) => Reply::result(Err(e)),
+                        }
+                    }
+                    // A scan changes nothing and must not wait for, or block, a change.
+                    Request::Action { op, target, value } if op.ends_with("-scan") => {
+                        RADIOS_WATCHED.store(started.elapsed().as_secs(), Ordering::Relaxed);
+                        Reply::result(b.action(&op, &target, &value))
+                    }
+                    // The way out of a lock screen: never behind another operation.
+                    Request::Action { op, target, value } if is_power(&op) => {
+                        Reply::result(b.action(&op, &target, &value))
+                    }
+                    Request::Action { op, target, value } => match try_mutate(&mutations) {
+                        Some(_guard) => {
+                            if op.starts_with("wifi-") || op.starts_with("bluetooth-") {
+                                RADIOS_WATCHED
+                                    .store(started.elapsed().as_secs(), Ordering::Relaxed);
+                            }
                             CHANGES.fetch_add(1, Ordering::SeqCst);
                             let result = b.action(&op, &target, &value);
                             // Toggles are read back at once; sliders stream too fast for that.
@@ -253,7 +350,7 @@ fn main() -> anyhow::Result<()> {
                             }
                             // So that a connection in progress shows at once,
                             // rather than the button flipping back meanwhile.
-                            if result.is_ok() && op.starts_with("wifi-") {
+                            if result.is_ok() && (op.starts_with("wifi-") || op == "network-use") {
                                 poll_wifi(&b, &state);
                             }
                             if result.is_ok() && op.starts_with("bluetooth-") {
@@ -264,16 +361,16 @@ fn main() -> anyhow::Result<()> {
                             }
                             Reply::result(result)
                         }
-                        Err(_) => Reply::result(Err(anyhow::anyhow!(
+                        None => Reply::result(Err(anyhow::anyhow!(
                             "Another operation is in progress. Complete it or cancel its prompt first."
                         ))),
                     },
-                    Request::Theme { settings } => match mutations.try_lock() {
-                        Ok(_guard) => Reply::result(
+                    Request::Theme { settings } => match try_mutate(&mutations) {
+                        Some(_guard) => Reply::result(
                             theme::save(settings)
                                 .map(|settings| state.lock().unwrap().settings = settings),
                         ),
-                        Err(_) => {
+                        None => {
                             Reply::result(Err(anyhow::anyhow!("Another operation is in progress")))
                         }
                     },
@@ -281,23 +378,36 @@ fn main() -> anyhow::Result<()> {
             })();
             let reply = reply.unwrap_or_else(|e| Reply::result(Err(e)));
             let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
-            let _ = serde_json::to_writer(&mut stream, &reply);
-            let _ = stream.write_all(b"\n");
+            let _ = send_line(&mut stream, &reply);
             clients.fetch_sub(1, Ordering::Relaxed);
         });
     }
     Ok(())
 }
 
+fn is_power(op: &str) -> bool {
+    matches!(op, "sleep" | "restart" | "shutdown")
+}
+/// None while another operation runs. One that panicked guards nothing any more,
+/// and must not refuse every action until the daemon restarts.
+fn try_mutate(mutations: &Mutex<()>) -> Option<MutexGuard<'_, ()>> {
+    match mutations.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
 /// Reads the Wi-Fi state into the snapshot; false when NetworkManager is unreachable.
 fn poll_wifi(b: &Backend, state: &Mutex<Snapshot>) -> bool {
     let seen = CHANGES.load(Ordering::SeqCst);
     let result = b.wifi();
+    let wired = b.wired().ok().flatten();
     let ok = result.is_ok();
     let mut s = state.lock().unwrap();
     if CHANGES.load(Ordering::SeqCst) != seen {
         return ok;
     }
+    s.wired = wired;
     match result {
         Ok((on, nets, scanning)) => {
             s.wifi = on;
@@ -398,5 +508,32 @@ fn poll_light(state: &Mutex<Snapshot>) {
             s.night_light = None;
             s.night_light_error = Some(e.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn power_actions_are_told_apart() {
+        for op in ["sleep", "restart", "shutdown"] {
+            assert!(is_power(op));
+        }
+        assert!(!is_power("wifi"));
+    }
+    #[test]
+    fn mutations_survive_a_panic_but_not_each_other() {
+        let mutations = Arc::new(Mutex::new(()));
+        let guard = try_mutate(&mutations).unwrap();
+        assert!(try_mutate(&mutations).is_none());
+        drop(guard);
+        let poison = mutations.clone();
+        let _ = thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poisons the mutex");
+        })
+        .join();
+        assert!(mutations.is_poisoned());
+        assert!(try_mutate(&mutations).is_some());
     }
 }

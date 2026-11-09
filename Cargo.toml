@@ -29,6 +29,13 @@ wayland-backend = "0.3"
 bitflags = "2"
 qrcode = { version = "0.14.1", default-features = false }
 
+[features]
+# Test hooks, for labs only: NEXUS_PACKAGES_FAKE stands in for sudo and pacman,
+# NEXUS_LOCK_TEST and NEXUS_LOCK_PREVIEW_STATE steer the lock, NEXUS_PHONE_FAKE
+# stands in for the phone. An installed build
+# must not have them.
+lab = []
+
 [profile.release]
 opt-level = 2
 strip = true
@@ -44,3 +51,7 @@ path = "src/bin/nexusd.rs"
 [[bin]]
 name = "nexus-files"
 path = "src/bin/files/main.rs"
+
+[[bin]]
+name = "nexus-notes"
+path = "src/bin/notes/main.rs"

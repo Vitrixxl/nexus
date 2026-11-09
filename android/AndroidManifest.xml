@@ -6,6 +6,13 @@
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
@@ -13,8 +20,8 @@
     <!-- App names of the notifications it forwards. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <application android:label="Nexus" android:icon="@mipmap/ic_launcher" android:allowBackup="false"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
-        android:requestLegacyExternalStorage="true">
+        android:theme="@style/Nexus"
+        android:requestLegacyExternalStorage="true" android:usesCleartextTraffic="true">
         <activity android:name=".Main" android:exported="true" android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -27,6 +34,38 @@
                 <data android:scheme="nexus" android:host="pair" />
             </intent-filter>
         </activity>
+        <activity android:name=".Update" android:exported="false" android:noHistory="true"
+            android:excludeFromRecents="true" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <activity android:name=".Notes" android:exported="false" android:label="Notes"
+            android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|screenLayout" />
+        <activity android:name=".Send" android:exported="true" android:excludeFromRecents="true"
+            android:noHistory="true" android:taskAffinity="" android:label="Copy on desktop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <service android:name=".ClipTile" android:exported="true" android:label="Send clipboard"
+            android:icon="@drawable/ic_fg" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <!-- MMS sent from the desktop: the system's MMS service reads the message here. -->
+        <provider android:name=".Mms$Store" android:authorities="io.github.vitrixxl.nexus.mms"
+            android:exported="false" android:grantUriPermissions="true" />
+        <activity android:name=".Cast" android:exported="false" android:noHistory="false"
+            android:excludeFromRecents="true" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <service android:name=".Cast$Run" android:exported="false" android:foregroundServiceType="mediaProjection" />
+        <service android:name=".Control" android:exported="true" android:label="Nexus"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/control" />
+        </service>
         <service android:name=".Link" android:exported="true"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>

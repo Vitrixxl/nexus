@@ -25,6 +25,28 @@ const ENDPOINTS: [(&str, &str); 2] = [
 ];
 type Properties = HashMap<String, glib::Variant>;
 
+/// The computer's battery: its level, and whether it is on power. Slow, up to 100 ms
+/// through ACPI on some laptops: never on the main loop.
+pub fn read_battery() -> Option<(u8, bool)> {
+    battery_in(std::path::Path::new("/sys/class/power_supply"))
+}
+/// A mouse's battery says `scope` Device, and one that can't be read is skipped: the
+/// next may well answer.
+fn battery_in(supplies: &std::path::Path) -> Option<(u8, bool)> {
+    std::fs::read_dir(supplies)
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            let p = entry.path();
+            let read = |file| std::fs::read_to_string(p.join(file)).unwrap_or_default();
+            if read("type").trim() != "Battery" || read("scope").trim() == "Device" {
+                return None;
+            }
+            let level = read("capacity").trim().parse().ok()?;
+            Some((level, matches!(read("status").trim(), "Charging" | "Full")))
+        })
+}
+
 async fn properties(
     bus: &gio::DBusConnection,
     name: &str,
@@ -171,6 +193,34 @@ pub fn estimate(state: u32, to_full: i64, to_empty: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_battery_is_the_computers_and_the_first_that_reads() {
+        let dir = std::env::temp_dir().join(format!("nexus-supplies-{}", std::process::id()));
+        let supply = |name: &str, files: &[(&str, &str)]| {
+            let path = dir.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            for (file, text) in files {
+                std::fs::write(path.join(file), format!("{text}\n")).unwrap();
+            }
+        };
+        assert_eq!(battery_in(&dir), None, "no such folder");
+        supply("AC", &[("type", "Mains")]);
+        // Listed in any order: these must lose to the laptop's wherever they come.
+        supply(
+            "hid-mouse",
+            &[("type", "Battery"), ("scope", "Device"), ("capacity", "7")],
+        );
+        supply("BAT9", &[("type", "Battery"), ("status", "Charging")]);
+        assert_eq!(battery_in(&dir), None, "nothing to read a level from");
+        supply(
+            "BAT0",
+            &[("type", "Battery"), ("capacity", "80"), ("status", "Full")],
+        );
+        assert_eq!(battery_in(&dir), Some((80, true)));
+        supply("BAT0", &[("status", "Discharging")]);
+        assert_eq!(battery_in(&dir), Some((80, false)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
     #[test]
     fn charge_and_discharge_estimates() {
         assert_eq!(estimate(1, 5460, 9999), "1 h 31 min until fully charged");

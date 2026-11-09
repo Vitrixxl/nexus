@@ -1,7 +1,7 @@
 use super::{
     super::{caption, hbox, label, vbox},
-    shell::{FILLET, FRAME, fillet},
-    slide::Slide,
+    shell::{BAR, GAP},
+    slide::{self, Pose, Slide},
 };
 use gtk::{gio, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
@@ -14,8 +14,10 @@ use std::{
 
 /// Popups on screen at once; older ones remain in the history.
 const MAX_POPUPS: usize = 4;
-const SLIDE: u32 = 260;
-const POPUP_WIDTH: i32 = 400;
+const SLIDE: u32 = 160;
+/// A card with the room its shadow needs, which the revealer around it would clip.
+const POPUP_WIDTH: i32 = 404;
+const CENTER_WIDTH: i32 = 380;
 
 fn picture(image: &Image, size: i32) -> Option<gtk::Image> {
     let widget = match image {
@@ -33,11 +35,18 @@ fn picture(image: &Image, size: i32) -> Option<gtk::Image> {
             );
             gtk::Image::from_paintable(Some(&texture))
         }
-        // Decoded at the size shown, not the file's own.
+        // Decoded at the size shown, not the file's own, and away from the UI thread:
+        // a photograph takes long enough to stall every animation on screen.
         Image::File(path) => {
-            let pixbuf =
-                gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, PICTURE, PICTURE, true).ok()?;
-            gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)))
+            let widget = gtk::Image::new();
+            let (image, path) = (widget.clone(), path.clone());
+            glib::spawn_future_local(async move {
+                match gio::spawn_blocking(move || decode(&path)).await {
+                    Ok(Some(texture)) => image.set_paintable(Some(&texture)),
+                    _ => image.set_visible(false),
+                }
+            });
+            widget
         }
         Image::Named(name)
             if gtk::IconTheme::for_display(&gtk::gdk::Display::default()?).has_icon(name) =>
@@ -49,9 +58,24 @@ fn picture(image: &Image, size: i32) -> Option<gtk::Image> {
     widget.set_pixel_size(size);
     Some(widget)
 }
+fn decode(path: &str) -> Option<gtk::gdk::MemoryTexture> {
+    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, PICTURE, PICTURE, true).ok()?;
+    Some(gtk::gdk::MemoryTexture::new(
+        pixbuf.width(),
+        pixbuf.height(),
+        if pixbuf.has_alpha() {
+            gtk::gdk::MemoryFormat::R8g8b8a8
+        } else {
+            gtk::gdk::MemoryFormat::R8g8b8
+        },
+        &pixbuf.read_pixel_bytes(),
+        pixbuf.rowstride() as usize,
+    ))
+}
 /// The sender's icon: the one it named, else that of its desktop entry or of an
-/// application with its name.
-fn app_icon(n: &Notification) -> gtk::Image {
+/// application with its name. Without one, its name says it alone: the same bell
+/// on every card would say nothing.
+fn app_icon(n: &Notification) -> Option<gtk::Image> {
     n.app_icon
         .as_ref()
         .and_then(|i| picture(i, 16))
@@ -63,7 +87,6 @@ fn app_icon(n: &Notification) -> gtk::Image {
             Some(image)
         })
         .or_else(|| picture(&Image::Named(n.app_name.to_lowercase()), 16))
-        .unwrap_or_else(|| gtk::Image::from_icon_name("preferences-system-notifications-symbolic"))
 }
 /// "now", minutes ago, then the time of day, then the date.
 fn age(time: i64) -> String {
@@ -82,8 +105,7 @@ fn age(time: i64) -> String {
         _ => format("%d %b"),
     }
 }
-/// One notification. `lines` bounds the body; `clicked` handles a click on a
-/// notification without a default action.
+/// One notification. `lines` bounds the body; `clicked` follows any click on it.
 fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>) -> gtk::Box {
     let card = vbox(8);
     card.add_css_class("notification");
@@ -91,7 +113,9 @@ fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>
         card.add_css_class("critical");
     }
     let head = hbox(8);
-    head.append(&app_icon(n));
+    if let Some(icon) = app_icon(n) {
+        head.append(&icon);
+    }
     let app = label(
         if n.app_name.is_empty() {
             "Notification"
@@ -104,6 +128,13 @@ fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>
     app.set_ellipsize(gtk::pango::EllipsizeMode::End);
     app.set_max_width_chars(24);
     head.append(&app);
+    if n.phone {
+        let from = gtk::Image::from_icon_name("phone-symbolic");
+        from.set_pixel_size(12);
+        from.add_css_class("notification-from");
+        from.set_tooltip_text(Some("From your phone"));
+        head.append(&from);
+    }
     let time = caption(&age(n.time));
     time.set_wrap(false);
     time.set_hexpand(true);
@@ -177,9 +208,8 @@ fn card(n: &Notification, server: &Rc<Server>, lines: i32, clicked: Rc<dyn Fn()>
         gesture.set_state(gtk::EventSequenceState::Claimed);
         if default {
             s.invoke(id, "default");
-        } else {
-            clicked();
         }
+        clicked();
     });
     card.add_controller(click);
     card
@@ -207,9 +237,14 @@ fn swipe(slide: &Slide, dir: f64, dismiss: impl Fn() + 'static) {
         let width = slide.width() as f32;
         if (dx * dir) as f32 > (width * 0.3).min(120.) {
             let dismiss = dismiss.clone();
-            slide.glide((width * dir as f32, 0.), 200, move || dismiss());
+            let away = Pose {
+                x: width * dir as f32,
+                opacity: 0.,
+                ..Pose::REST
+            };
+            slide.spring_to(away, slide::LEAVE, move || dismiss());
         } else {
-            slide.glide((0., 0.), 200, || {});
+            slide.spring_to(Pose::REST, slide::ARRIVE, || {});
         }
     });
     slide.add_controller(drag);
@@ -222,8 +257,8 @@ struct Popup {
     timeout: Cell<Option<Duration>>,
     timer: RefCell<Option<glib::SourceId>>,
 }
-/// Notifications as they arrive, rising out of the bottom-right corner of the
-/// screen, the newest against the bottom edge.
+/// Notifications as they arrive, separate cards sliding in under the bar, the
+/// newest at the top.
 pub struct Popups {
     window: gtk::Window,
     list: gtk::Box,
@@ -234,8 +269,7 @@ pub struct Popups {
     left: bool,
 }
 impl Popups {
-    /// Out of the bottom corner on `side`: `Edge::Right`, or `Edge::Left` for
-    /// the phone's.
+    /// Under the bar on `side`: `Edge::Right`, or `Edge::Left` for the phone's.
     pub fn new(app: &gtk::Application, server: Rc<Server>, side: Edge) -> Rc<Self> {
         let left = side == Edge::Left;
         let window = gtk::Window::builder()
@@ -251,33 +285,15 @@ impl Popups {
         window.set_namespace(Some("nexus-notifications"));
         window.set_layer(Layer::Overlay);
         window.set_keyboard_mode(KeyboardMode::None);
-        // Into the frame's corner, over everything, whatever reserves the edges.
+        // Over everything, whatever reserves the edges.
         window.set_exclusive_zone(-1);
-        window.set_anchor(Edge::Bottom, true);
+        window.set_anchor(Edge::Top, true);
         window.set_anchor(side, true);
-        window.set_margin(Edge::Bottom, FRAME);
-        window.set_margin(side, FRAME);
+        window.set_margin(Edge::Top, BAR + GAP);
         let list = vbox(0);
         list.add_css_class("popup-panel");
-        list.set_overflow(gtk::Overflow::Hidden);
         list.set_width_request(POPUP_WIDTH);
-        list.set_margin_top(FILLET);
-        if left {
-            list.set_margin_end(FILLET);
-        } else {
-            list.set_margin_start(FILLET);
-        }
-        let shape = gtk::Overlay::new();
-        shape.set_child(Some(&list));
-        shape.add_overlay(&fillet(side, false, FILLET));
-        let corner = fillet(Edge::Bottom, left, FILLET);
-        corner.set_halign(if left {
-            gtk::Align::End
-        } else {
-            gtk::Align::Start
-        });
-        shape.add_overlay(&corner);
-        window.set_child(Some(&shape));
+        window.set_child(Some(&list));
         Rc::new(Self {
             window,
             list,
@@ -330,7 +346,7 @@ impl Popups {
     }
     fn add(self: &Rc<Self>, id: u32, content: &gtk::Box) -> Rc<Popup> {
         let revealer = gtk::Revealer::new();
-        revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
+        revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
         revealer.set_transition_duration(SLIDE);
         let slide = Slide::default();
         slide.set_measure_width(POPUP_WIDTH);
@@ -378,11 +394,22 @@ impl Popups {
                 }
             }
         });
-        self.list.append(&revealer);
+        self.list.prepend(&revealer);
         self.shown.borrow_mut().insert(0, popup.clone());
         self.window.set_visible(true);
+        // In from beyond the edge, as the cards below make room.
+        let dir = if self.left { -1. } else { 1. };
+        popup.slide.place(Pose {
+            x: dir * POPUP_WIDTH as f32,
+            opacity: 0.,
+            ..Pose::REST
+        });
+        popup.slide.spring_to(Pose::REST, slide::ARRIVE, || {});
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
+            if revealer.parent().is_none() {
+                return;
+            }
             revealer.set_reveal_child(true);
             if let Some(s) = weak.upgrade() {
                 s.fit_during(&revealer);
@@ -445,6 +472,27 @@ impl Popups {
             shown.remove(i)
         };
         Self::stop(&popup);
+        // Gone before it ever appeared: its revealer would never report closing.
+        if !popup.revealer.reveals_child() {
+            self.list.remove(&popup.revealer);
+            if self.list.first_child().is_none() {
+                self.window.set_visible(false);
+            }
+            if expired {
+                self.server.expire(id);
+            }
+            return;
+        }
+        let dir = if self.left { -1. } else { 1. };
+        popup.slide.spring_to(
+            Pose {
+                x: dir * POPUP_WIDTH as f32,
+                opacity: 0.,
+                ..Pose::REST
+            },
+            slide::LEAVE,
+            || {},
+        );
         popup.revealer.set_reveal_child(false);
         self.fit_during(&popup.revealer);
         if expired {
@@ -459,11 +507,14 @@ impl Popups {
     }
 }
 
-/// History of the notifications still live, in a panel out of the bottom-right corner.
+/// The calendar and the notifications still live, in a panel at the right of the screen.
 pub struct Center {
     pub widget: gtk::Box,
     /// Do not disturb.
     pub quiet: gtk::Switch,
+    calendar: gtk::Calendar,
+    /// Closes the panel, once it exists, when a notification is acted on.
+    pub close: RefCell<Rc<dyn Fn()>>,
     list: gtk::Box,
     scroll: gtk::ScrolledWindow,
     empty: gtk::Label,
@@ -472,11 +523,54 @@ pub struct Center {
     clear: gtk::Button,
     server: Rc<Server>,
 }
+/// The calendar under "November 2026 ‹ ›".
+fn calendar_card(calendar: &gtk::Calendar) -> gtk::Box {
+    let month = label("", "calendar-month");
+    month.set_hexpand(true);
+    month.set_xalign(0.);
+    let head = hbox(2);
+    head.add_css_class("calendar-head");
+    head.append(&month);
+    for (icon, title, by) in [
+        ("go-previous-symbolic", "Previous month", -1),
+        ("go-next-symbolic", "Next month", 1),
+    ] {
+        let step = gtk::Button::from_icon_name(icon);
+        step.add_css_class("calendar-step");
+        step.set_tooltip_text(Some(title));
+        step.update_property(&[gtk::accessible::Property::Label(title)]);
+        let calendar = calendar.clone();
+        step.connect_clicked(move |_| {
+            if let Ok(date) = calendar.date().add_months(by) {
+                calendar.select_day(&date);
+            }
+        });
+        head.append(&step);
+    }
+    let title = move |calendar: &gtk::Calendar| {
+        if let Ok(text) = calendar.date().format("%B %Y") {
+            month.set_text(&text);
+        }
+    };
+    title(calendar);
+    // A click on a day of another month moves it too.
+    calendar.connect_notify_local(None, move |calendar, _| title(calendar));
+    let card = vbox(2);
+    card.add_css_class("center-calendar");
+    card.append(&head);
+    card.append(calendar);
+    card
+}
 impl Center {
     pub fn new(server: Rc<Server>) -> Rc<Self> {
         let widget = vbox(12);
         widget.add_css_class("notification-center");
-        widget.set_width_request(460);
+        widget.set_width_request(CENTER_WIDTH);
+        let calendar = gtk::Calendar::new();
+        calendar.set_show_week_numbers(false);
+        // Its own heading has a pair of steppers each for the month and the year.
+        calendar.set_show_heading(false);
+        widget.append(&calendar_card(&calendar));
         let head = hbox(10);
         let title = label("Notifications", "center-title");
         title.set_hexpand(true);
@@ -494,11 +588,16 @@ impl Center {
         status.set_visible(false);
         widget.append(&status);
         let list = vbox(8);
+        // A scrolled window asks for its height at no width, for which wrapped text
+        // answers as if squeezed narrow: blank space under the list.
+        let sized = Slide::default();
+        sized.set_measure_width(CENTER_WIDTH - 24);
+        sized.set_child(&list);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
-            .max_content_height(560)
-            .child(&list)
+            .max_content_height(520)
+            .child(&sized)
             .build();
         widget.append(&scroll);
         let empty = label("No notifications", "empty-state");
@@ -518,6 +617,8 @@ impl Center {
         Rc::new(Self {
             widget,
             quiet,
+            calendar,
+            close: RefCell::new(Rc::new(|| {})),
             list,
             scroll,
             empty,
@@ -527,13 +628,27 @@ impl Center {
             server,
         })
     }
+    /// Back to today. Only on opening: a notification arriving must not undo
+    /// the browsing of months. It may have stayed up for days; today moves on.
+    pub fn today(&self) {
+        if let Ok(now) = glib::DateTime::now_local() {
+            self.calendar.select_day(&now);
+        }
+    }
     pub fn refresh(&self) {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
         let all = self.server.list();
+        let close = self.close.borrow().clone();
         for n in &all {
-            self.list.append(&card(n, &self.server, 8, Rc::new(|| {})));
+            // A click that opens nothing leaves the list where it is, to be read on.
+            let clicked: Rc<dyn Fn()> = if n.default_action() {
+                close.clone()
+            } else {
+                Rc::new(|| {})
+            };
+            self.list.append(&card(n, &self.server, 8, clicked));
         }
         self.scroll.set_visible(!all.is_empty());
         self.empty.set_visible(all.is_empty());

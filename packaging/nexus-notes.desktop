@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Notes
+GenericName=Notes
+Comment=Pages of notes, kept as Markdown files
+Exec=nexus-notes
+Icon=accessories-text-editor
+Terminal=false
+StartupNotify=true
+Categories=Office;Utility;TextEditor;
+Keywords=notes;markdown;wiki;todo;
+StartupWMClass=io.github.vitrixxl.NexusNotes

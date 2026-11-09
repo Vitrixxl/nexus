@@ -1,4 +1,9 @@
 use super::super::{hbox, signal_icon};
+use super::{
+    dock::{self, Dock},
+    osd::Osd,
+    slide::{self, Pose, Slide},
+};
 use gtk::{glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nexus_control::{Request, Snapshot, request};
@@ -11,11 +16,11 @@ use std::{
 pub struct Surface {
     pub window: gtk::ApplicationWindow,
     pub content: gtk::Stack,
-    pub revealer: gtk::Revealer,
-    clip: gtk::Box,
-    corners: [gtk::Widget; 4],
+    slide: Slide,
+    /// Mapped with the window and before it, so always under it.
+    catcher: gtk::ApplicationWindow,
     pub page: RefCell<String>,
-    /// The panel is folding up; the window hides once it is gone.
+    /// The panel is on its way out; the window hides once it is gone.
     closing: Cell<bool>,
     anchors: RefCell<Vec<PanelAnchor>>,
 }
@@ -24,171 +29,81 @@ struct PanelAnchor {
     monitor: gtk::gdk::Monitor,
     button: glib::WeakRef<gtk::Button>,
 }
-/// Concave corners are round, as wide as the convex corners of their surface.
-pub const FILLET: i32 = 22;
-/// Bottom edge of the bar (34px high, flush with the top of the screen), less 1px
-/// so the panel joins it.
-const BAR_BOTTOM: i32 = 33;
-/// Width of the frame the bar runs into, down the sides and along the bottom.
-pub const FRAME: i32 = 8;
-/// Room around the panel for its drop shadow; margins are not part of the input
-/// target, so clicks there still reach the dismissing backdrop.
-const SHADOW: i32 = 64;
+/// Height of the bar, whatever its shape; panels hang below it.
+pub const BAR: i32 = 32;
+/// Between the bar and what hangs from it.
+pub const GAP: i32 = 6;
+/// Between a floating surface and the side of the screen.
+pub const INSET: i32 = 8;
 /// Matches the power tiles' leaving animations in the theme.
-const POWER_LEAVE: Duration = Duration::from_millis(220);
-/// Concave corner joining a screen or bar edge to the side of the surface
-/// hanging from it: the bar from the screen edge, a dropped panel from the bar,
-/// the corner panels from the side and bottom of the screen, so each flows
-/// out of the edge instead of meeting it at a right angle. It runs `length`
-/// along the edge, `after` the surface (right of it, or below it on the right
-/// edge), plus a solid line laid over the surface's side, so no seam shows
-/// between the two at fractional scales. It is as deep as it is long.
-pub fn fillet(edge: Edge, after: bool, length: i32) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::new();
-    area.add_css_class("panel-fillet");
-    if matches!(edge, Edge::Right | Edge::Left) {
-        area.set_content_width(length);
-        area.set_content_height(length + 1);
-        area.set_halign(if edge == Edge::Right {
-            gtk::Align::End
-        } else {
-            gtk::Align::Start
-        });
-        area.set_valign(if after {
-            gtk::Align::End
-        } else {
-            gtk::Align::Start
-        });
-    } else {
-        area.set_content_width(length + 1);
-        area.set_content_height(length);
-        area.set_valign(if edge == Edge::Bottom {
-            gtk::Align::End
-        } else {
-            gtk::Align::Start
-        });
+const POWER_LEAVE: Duration = Duration::from_millis(120);
+/// A panel just before it opens and just after it closes: tucked toward the bar.
+// Never faded: Hyprland only blurs where a surface is opaque enough, so a fade
+// would show the panel clear first and the blur arrive with a jump at the end.
+const TUCKED: Pose = Pose {
+    x: 0.,
+    y: -6.,
+    opacity: 1.,
+};
+/// Room a panel's surface keeps around it for its shadow: 32px of blur, 14 down.
+const SHADOW: i32 = 40;
+/// Full-screen and clear, under a panel: takes the clicks around it and never
+/// redraws, so that only the panel's own small surface does, with its blur.
+fn click_away(app: &gtk::Application) -> gtk::ApplicationWindow {
+    let window = gtk::ApplicationWindow::builder()
+        .application(app)
+        .title("Nexus click-away")
+        .build();
+    window.add_css_class("nexus");
+    window.add_css_class("shell-overlay");
+    window.init_layer_shell();
+    window.set_namespace(Some("nexus-click-away"));
+    window.set_layer(Layer::Overlay);
+    for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+        window.set_anchor(edge, true);
     }
-    area.set_draw_func(move |area, cr, w, h| {
-        let (mut w, mut h) = (f64::from(w), f64::from(h));
-        let color = area.color();
-        cr.set_source_rgba(
-            f64::from(color.red()),
-            f64::from(color.green()),
-            f64::from(color.blue()),
-            f64::from(color.alpha()),
-        );
-        use std::f64::consts::{FRAC_PI_2, PI};
-        // Drawn against a top edge, then turned onto the edge it joins.
-        match edge {
-            Edge::Bottom => {
-                cr.translate(0., h);
-                cr.scale(1., -1.);
-            }
-            Edge::Right => {
-                cr.translate(w, 0.);
-                cr.rotate(FRAC_PI_2);
-                (w, h) = (h, w);
-            }
-            // The right edge's, mirrored.
-            Edge::Left => {
-                cr.transform(gtk::cairo::Matrix::new(0., 1., 1., 0., 0., 0.));
-                (w, h) = (h, w);
-            }
-            _ => {}
-        }
-        // Square minus a quarter ellipse centred on the outer bottom corner.
-        let quarter = |cr: &gtk::cairo::Context, x: f64, from: f64, to: f64| {
-            cr.save().ok();
-            cr.translate(x, h);
-            cr.scale(w - 1., h);
-            cr.arc_negative(0., 0., 1., from, to);
-            cr.restore().ok();
-        };
-        cr.move_to(0., 0.);
-        cr.line_to(w, 0.);
-        if after {
-            quarter(cr, w, -FRAC_PI_2, -PI);
-            cr.line_to(0., h);
-        } else {
-            cr.line_to(w, h);
-            cr.line_to(w - 1., h);
-            quarter(cr, 0., 0., -FRAC_PI_2);
-        }
-        cr.close_path();
-        let _ = cr.fill();
-    });
-    area
+    window.set_exclusive_zone(-1);
+    window.set_margin(Edge::Top, BAR);
+    window.set_keyboard_mode(KeyboardMode::None);
+    // A surface that paints nothing gets no buffer and never maps: one pixel,
+    // too faint to see, instead of a whole screen darkened by as little.
+    let seed = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    seed.add_css_class("click-away-seed");
+    seed.set_halign(gtk::Align::Start);
+    seed.set_valign(gtk::Align::Start);
+    window.set_child(Some(&seed));
+    window
 }
-/// The rest of the frame the bar starts, down the sides and along the bottom of
-/// the screen, keeping the windows off it. The sides also carry its round inner
-/// corners, as wide as the windows' own corners plus their gap. Above the
-/// windows like the bar, so a window dimming the screen around it spares both,
-/// but clicks go through to whatever is below. Made before the bar, so the
-/// sides reserve their edges first and run the whole height of the screen.
-fn frame(app: &gtk::Application, monitor: &gtk::gdk::Monitor) -> [gtk::ApplicationWindow; 3] {
-    [Edge::Left, Edge::Right, Edge::Bottom].map(|edge| {
-        let window = gtk::ApplicationWindow::builder()
-            .application(app)
-            .title("Nexus frame")
-            .build();
-        window.add_css_class("nexus");
-        window.add_css_class("nexus-frame");
-        window.init_layer_shell();
-        window.set_namespace(Some("nexus-frame"));
-        window.set_monitor(Some(monitor));
-        window.set_layer(Layer::Top);
-        window.set_keyboard_mode(KeyboardMode::None);
-        let side = edge != Edge::Bottom;
-        let across = if side {
-            [Edge::Top, Edge::Bottom]
-        } else {
-            [Edge::Left, Edge::Right]
-        };
-        for edge in [edge, across[0], across[1]] {
-            window.set_anchor(edge, true);
-        }
-        window.set_exclusive_zone(FRAME);
-        let area = gtk::DrawingArea::new();
-        area.add_css_class("panel-fillet");
-        if side {
-            area.set_content_width(FRAME + FILLET);
-        } else {
-            area.set_content_height(FRAME);
-        }
-        area.set_draw_func(move |area, cr, w, h| {
-            let (w, h) = (f64::from(w), f64::from(h));
-            cr.set_source_color(&area.color());
-            cr.rectangle(0., 0., w, h);
-            if side {
-                use std::f64::consts::{FRAC_PI_2, PI};
-                // Drawn on the left, less the inside of the frame.
-                if edge == Edge::Right {
-                    cr.translate(w, 0.);
-                    cr.scale(-1., 1.);
-                }
-                let (left, top, bottom) = (
-                    f64::from(FRAME),
-                    f64::from(BAR_BOTTOM + 1),
-                    h - f64::from(FRAME),
-                );
-                let r = f64::from(FILLET);
-                cr.new_sub_path();
-                cr.arc(left + r, bottom - r, r, FRAC_PI_2, PI);
-                cr.arc(left + r, top + r, r, PI, 3. * FRAC_PI_2);
-                cr.line_to(w + 1., top);
-                cr.line_to(w + 1., bottom);
-                cr.close_path();
-                cr.set_fill_rule(gtk::cairo::FillRule::EvenOdd);
-            }
-            let _ = cr.fill();
+/// Calls `close` on a click on `window` outside `keep`.
+fn close_on_click(
+    window: &gtk::ApplicationWindow,
+    keep: Option<gtk::Widget>,
+    close: impl Fn() + 'static,
+) {
+    let click = gtk::GestureClick::new();
+    click.connect_released(move |click, _, x, y| {
+        let point = gtk::graphene::Point::new(x as f32, y as f32);
+        let inside = keep.as_ref().is_some_and(|keep| {
+            click
+                .widget()
+                .and_then(|window| keep.compute_bounds(&window))
+                .is_some_and(|bounds| bounds.contains_point(&point))
         });
-        window.set_child(Some(&area));
-        window.present();
-        if let Some(surface) = window.surface() {
-            surface.set_input_region(&gtk::cairo::Region::create());
+        if !inside {
+            close();
         }
-        window
-    })
+    });
+    window.add_controller(click);
+}
+/// Where a surface goes for a panel at `left`, `width` wide, keeping room for its
+/// shadow where the screen has some: the surface's margin, and the room on each side.
+fn shadow_room(left: i32, width: i32, screen: i32) -> (i32, i32, i32) {
+    let before = left.clamp(0, SHADOW);
+    (
+        left - before,
+        before,
+        (screen - left - width).clamp(0, SHADOW),
+    )
 }
 impl Surface {
     pub fn new(app: &gtk::Application) -> Rc<Self> {
@@ -201,99 +116,46 @@ impl Surface {
         window.init_layer_shell();
         window.set_namespace(Some("nexus-panel"));
         window.set_layer(Layer::Overlay);
-        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
-            window.set_anchor(edge, true);
-        }
+        window.set_anchor(Edge::Top, true);
+        window.set_anchor(Edge::Bottom, true);
         window.set_exclusive_zone(-1);
-        window.set_margin(Edge::Top, BAR_BOTTOM);
+        window.set_margin(Edge::Top, BAR);
         // On demand rather than exclusive: Hyprland still focuses the panel when it
         // maps, but an exclusive layer would also take every click, the bar's too.
         window.set_keyboard_mode(KeyboardMode::OnDemand);
-        let overlay = gtk::Overlay::new();
-        let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        backdrop.set_hexpand(true);
-        backdrop.set_vexpand(true);
-        overlay.set_child(Some(&backdrop));
         let content = gtk::Stack::new();
         content.set_hhomogeneous(false);
         content.set_vhomogeneous(false);
         content.add_css_class("shell-panel");
         content.set_overflow(gtk::Overflow::Hidden);
-        let revealer = gtk::Revealer::new();
-        revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-        revealer.set_transition_duration(120);
-        // The fillets are overlays so they paint above the panel's shadow.
-        let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let gutters = [
-            gtk::Box::new(gtk::Orientation::Horizontal, 0),
-            gtk::Box::new(gtk::Orientation::Horizontal, 0),
-        ];
-        body.append(&gutters[0]);
-        body.append(&content);
-        body.append(&gutters[1]);
-        let panel = gtk::Overlay::new();
-        panel.set_child(Some(&body));
-        let fillets = [
-            fillet(Edge::Top, false, FILLET),
-            fillet(Edge::Top, true, FILLET),
-        ];
-        for (gutter, (corner, align)) in gutters
-            .iter()
-            .zip(fillets.iter().zip([gtk::Align::Start, gtk::Align::End]))
-        {
-            gutter.set_width_request(FILLET);
-            corner.set_halign(align);
-            panel.add_overlay(corner);
-        }
-        panel.set_margin_start(SHADOW);
-        panel.set_margin_end(SHADOW);
-        panel.set_margin_bottom(SHADOW);
-        revealer.set_child(Some(&panel));
-        let [left, right] = fillets;
-        let [gutter_left, gutter_right] = gutters;
-        let corners = [
-            left.upcast(),
-            right.upcast(),
-            gutter_left.upcast(),
-            gutter_right.upcast(),
-        ];
-        // The revealer does not clip its sliding child here, so the panel would be
-        // drawn over the bar while it animates; this box cuts it at the bar's edge.
-        let clip = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        clip.set_overflow(gtk::Overflow::Hidden);
-        clip.set_halign(gtk::Align::Center);
-        clip.set_valign(gtk::Align::Start);
-        clip.append(&revealer);
-        overlay.add_overlay(&clip);
-        window.set_child(Some(&overlay));
+        let slide = Slide::default();
+        slide.set_child(&content);
+        slide.set_halign(gtk::Align::Center);
+        slide.set_valign(gtk::Align::Start);
+        window.set_child(Some(&slide));
         let this = Rc::new(Self {
             window,
             content,
-            revealer,
-            clip,
-            corners,
+            slide,
+            catcher: click_away(app),
             page: RefCell::new(String::new()),
             closing: Cell::new(false),
             anchors: RefCell::default(),
         });
-        let weak = Rc::downgrade(&this);
-        this.revealer
-            .connect_child_revealed_notify(move |revealer| {
-                if let Some(s) = weak.upgrade()
-                    && !revealer.is_child_revealed()
-                    && s.closing.replace(false)
-                {
-                    s.window.set_visible(false);
+        let close = |s: &Rc<Self>| {
+            let weak = Rc::downgrade(s);
+            move || {
+                if let Some(s) = weak.upgrade() {
+                    s.hide();
                 }
-            });
-        let weak = Rc::downgrade(&this);
-        let click = gtk::GestureClick::new();
-        click.connect_released(move |_, _, _, _| {
-            if let Some(s) = weak.upgrade() {
-                s.hide();
             }
-        });
-        backdrop.add_controller(click);
+        };
+        close_on_click(&this.catcher, None, close(&this));
+        close_on_click(
+            &this.window,
+            Some(this.content.clone().upcast()),
+            close(&this),
+        );
         let weak = Rc::downgrade(&this);
         this.window.connect_close_request(move |_| {
             if let Some(s) = weak.upgrade() {
@@ -320,10 +182,9 @@ impl Surface {
     pub fn is_open(&self, page: &str) -> bool {
         self.window.is_visible() && self.page.borrow().as_str() == page
     }
-    /// Folds the panel back up under the bar, then hides the window. The power
-    /// tiles fly back out first; a panel still sliding in closes at once.
+    /// Sends the panel back under the bar, then hides the window. The power
+    /// tiles fly back out first.
     pub fn hide(self: &Rc<Self>) {
-        self.window.set_keyboard_mode(KeyboardMode::None);
         self.page.borrow_mut().clear();
         let power = self.window.has_css_class("power-overlay");
         if power && self.window.is_visible() && !self.window.has_css_class("leaving") {
@@ -339,87 +200,117 @@ impl Surface {
             return;
         }
         self.window.remove_css_class("leaving");
-        if power || !self.revealer.is_child_revealed() {
+        if power || !self.window.is_visible() {
+            self.window.set_keyboard_mode(KeyboardMode::None);
             self.closing.set(false);
             self.window.set_visible(false);
-            // Collapse without animation so the next open slides in again.
-            self.revealer
-                .set_transition_type(gtk::RevealerTransitionType::None);
-        } else {
-            self.closing.set(true);
-            self.revealer
-                .set_transition_type(gtk::RevealerTransitionType::SlideDown);
-            self.revealer.set_transition_duration(160);
+            self.catcher.set_visible(false);
+            return;
         }
-        self.revealer.set_reveal_child(false);
+        self.closing.set(true);
+        let s = self.clone();
+        self.slide.spring_to(TUCKED, slide::LEAVE, move || {
+            // Focus comes with mapping: a panel reopened on its way out keeps it.
+            if s.closing.replace(false) {
+                s.window.set_keyboard_mode(KeyboardMode::None);
+                s.window.set_visible(false);
+                s.catcher.set_visible(false);
+            }
+        });
+    }
+    /// Both surfaces leave for `monitor`: the catcher stays under, as it maps first.
+    fn set_monitor(&self, monitor: &gtk::gdk::Monitor) {
+        if self.window.monitor().as_ref() != Some(monitor) {
+            self.window.set_visible(false);
+            self.catcher.set_visible(false);
+            self.window.set_monitor(Some(monitor));
+            self.catcher.set_monitor(Some(monitor));
+        }
     }
     pub fn show(self: &Rc<Self>, page: &str, monitor: Option<&gtk::gdk::Monitor>) {
-        if let Some(monitor) = monitor
-            && self.window.monitor().as_ref() != Some(monitor)
-        {
-            self.window.set_visible(false);
-            self.window.set_monitor(Some(monitor));
+        if let Some(monitor) = monitor {
+            self.set_monitor(monitor);
         }
         *self.page.borrow_mut() = page.into();
+        let was_shown = self.window.is_visible() && !self.closing.get();
         self.closing.set(false);
         self.window.remove_css_class("leaving");
         let power = page == "power";
-        self.clip.set_halign(gtk::Align::Center);
-        self.clip.set_margin_start(0);
-        for corner in &self.corners {
-            corner.set_visible(!power);
-        }
-        // The launcher surface starts under the bar, so nothing it renders (even a
-        // stale frame) can cover the bar; the power chooser dims the whole screen.
         // The power tiles fly in from beyond the panel, which must not clip them.
-        let overflow = if power {
+        self.content.set_overflow(if power {
             gtk::Overflow::Visible
         } else {
             gtk::Overflow::Hidden
-        };
-        for widget in [
-            self.content.upcast_ref::<gtk::Widget>(),
-            self.revealer.upcast_ref(),
-            self.clip.upcast_ref(),
-        ] {
-            widget.set_overflow(overflow);
-        }
+        });
+        self.slide.set_valign(gtk::Align::Start);
+        self.slide.set_margin_top(GAP);
         if power {
+            // Dims and blurs the whole screen, the bar included.
             self.window.add_css_class("power-overlay");
             self.window.set_margin(Edge::Top, 0);
-            self.clip.set_valign(gtk::Align::Center);
-            self.clip.set_margin_top(SHADOW);
+            self.slide.set_valign(gtk::Align::Center);
+            self.slide.set_margin_top(0);
         } else {
             self.window.remove_css_class("power-overlay");
-            self.window.set_margin(Edge::Top, BAR_BOTTOM);
-            self.clip.set_valign(gtk::Align::Start);
-            self.clip.set_margin_top(0);
+            self.window.set_margin(Edge::Top, BAR);
         }
         self.content.set_visible_child_name(page);
         let monitor = self.window.monitor();
-        if let Some((button, monitor)) = self.anchors.borrow().iter().find_map(|anchor| {
+        if page == "launcher" {
+            // In the upper part of the screen: it grows down as results come, not around.
+            let height = monitor.as_ref().map_or(1000, |m| m.geometry().height());
+            self.slide.set_margin_top((height / 5 - BAR).max(GAP));
+        }
+        let below = self.anchors.borrow().iter().find_map(|anchor| {
             (anchor.page == page && monitor.as_ref().is_none_or(|m| m == &anchor.monitor))
                 .then(|| anchor.button.upgrade().map(|b| (b, anchor.monitor.clone())))
                 .flatten()
-        }) {
-            self.window.set_monitor(Some(&monitor));
-            self.align_below(&button, &monitor, page == "battery");
-        }
-        self.window.set_keyboard_mode(KeyboardMode::OnDemand);
-        self.window.present();
-        let s = self.clone();
-        glib::idle_add_local_once(move || {
-            // The power tiles animate on their own.
-            s.revealer.set_transition_type(if power {
-                gtk::RevealerTransitionType::None
-            } else {
-                gtk::RevealerTransitionType::SlideDown
-            });
-            s.revealer.set_transition_duration(120);
-            s.revealer.set_reveal_child(true);
         });
+        if let Some((_, monitor)) = &below {
+            self.set_monitor(monitor);
+        }
+        // As wide as the panel and its shadow, centred by the compositor unless it
+        // hangs from a button. The height stays, so that a page unfolding inside
+        // never resizes the surface. Set once: each change here is a configure.
+        let room = if power { 0 } else { SHADOW };
+        let (margin, before, after) = below
+            .and_then(|(button, monitor)| self.below(&button, &monitor))
+            .unwrap_or((0, room, room));
+        self.window
+            .set_anchor(Edge::Left, power || margin + before > room);
+        self.window.set_anchor(Edge::Right, power);
+        self.window.set_margin(Edge::Left, margin);
+        self.slide.set_margin_start(before);
+        self.slide.set_margin_end(after);
+        self.window.set_keyboard_mode(KeyboardMode::OnDemand);
+        if power {
+            // The tiles animate on their own.
+            self.slide.place(Pose::REST);
+        } else if !was_shown {
+            if !self.window.is_visible() {
+                self.slide.place(TUCKED);
+            }
+            self.slide.spring_to(Pose::REST, slide::ARRIVE, || {});
+        }
+        // ponytail: also under the power chooser, which needs no catcher, at about 25%
+        // more compositor work there; hiding it means remapping the panel above it.
+        self.catcher.present();
+        self.window.present();
+        // Only the launcher and the power chooser are typed at. A key meant for the
+        // window behind must not land on the panel's first button, say the Wi-Fi's.
+        if page != "launcher" && !power {
+            let window = self.window.clone();
+            glib::idle_add_local_once(move || {
+                gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>)
+            });
+        }
     }
-    fn anchor(&self, page: &'static str, monitor: &gtk::gdk::Monitor, button: &gtk::Button) {
+    pub(super) fn anchor(
+        &self,
+        page: &'static str,
+        monitor: &gtk::gdk::Monitor,
+        button: &gtk::Button,
+    ) {
         let mut anchors = self.anchors.borrow_mut();
         anchors.retain(|anchor| anchor.button.upgrade().is_some());
         anchors.push(PanelAnchor {
@@ -428,34 +319,29 @@ impl Surface {
             button: button.downgrade(),
         });
     }
-    /// Anchor the panel to its button, excluding the transparent shadow gutters.
-    /// The bar sits between the sides of the frame, which reserve their edges first.
-    fn align_below(&self, button: &gtk::Button, monitor: &gtk::gdk::Monitor, right_aligned: bool) {
-        let Some(window) = button.root().and_downcast::<gtk::ApplicationWindow>() else {
-            return;
-        };
-        let Some(bounds) = button.compute_bounds(&window) else {
-            return;
-        };
-        let (_, width, _, _) = self.clip.measure(gtk::Orientation::Horizontal, -1);
-        let left = if right_aligned {
-            let right = FRAME + (bounds.x() + bounds.width()) as i32;
-            right - width + SHADOW + FILLET
-        } else {
-            let centre = FRAME + (bounds.x() + bounds.width() / 2.) as i32;
-            centre - width / 2
-        };
-        let left = left.clamp(0, (monitor.geometry().width() - width).max(0));
-        self.clip.set_halign(gtk::Align::Start);
-        self.clip.set_margin_start(left);
+    /// The surface's margin and the room for the shadow on each side, to centre the
+    /// panel under its button, as far as the screen allows.
+    fn below(&self, button: &gtk::Button, monitor: &gtk::gdk::Monitor) -> Option<(i32, i32, i32)> {
+        let window = button.root().and_downcast::<gtk::ApplicationWindow>()?;
+        let bounds = button.compute_bounds(&window)?;
+        // Of the panel alone: the slide's would count its room for the shadow.
+        let (_, width, _, _) = self.content.measure(gtk::Orientation::Horizontal, -1);
+        let width = width as f32;
+        let centre = bounds.x() + bounds.width() / 2.;
+        let screen = monitor.geometry().width() as f32;
+        let left = (centre - width / 2.).clamp(
+            INSET as f32,
+            (screen - width - INSET as f32).max(INSET as f32),
+        );
+        Some(shadow_room(left as i32, width as i32, screen as i32))
     }
 }
 
-/// A panel rising out of the bottom-right corner of the screen like the
-/// notification popups, over a dimmed backdrop.
+/// A floating panel at the right of the screen, sliding in from beyond the edge.
 pub struct Drawer {
     window: gtk::ApplicationWindow,
-    slide: super::slide::Slide,
+    slide: Slide,
+    catcher: gtk::ApplicationWindow,
     open: Cell<bool>,
 }
 impl Drawer {
@@ -469,57 +355,41 @@ impl Drawer {
         window.init_layer_shell();
         window.set_namespace(Some("nexus-drawer"));
         window.set_layer(Layer::Overlay);
-        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+        for edge in [Edge::Top, Edge::Bottom, Edge::Right] {
             window.set_anchor(edge, true);
         }
         window.set_exclusive_zone(-1);
+        window.set_margin(Edge::Top, BAR);
         window.set_keyboard_mode(KeyboardMode::None);
-        let overlay = gtk::Overlay::new();
-        let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        backdrop.set_hexpand(true);
-        backdrop.set_vexpand(true);
-        // Dims what the frame holds, not the frame the panel joins.
-        let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        dim.add_css_class("drawer-dim");
-        dim.set_vexpand(true);
-        dim.set_margin_top(BAR_BOTTOM + 1);
-        dim.set_margin_start(FRAME);
-        dim.set_margin_end(FRAME);
-        dim.set_margin_bottom(FRAME);
-        backdrop.append(&dim);
-        overlay.set_child(Some(&backdrop));
         let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         panel.add_css_class("drawer-panel");
-        panel.set_margin_top(FILLET);
-        panel.set_margin_start(FILLET);
+        panel.set_overflow(gtk::Overflow::Hidden);
         panel.append(child);
-        let shape = gtk::Overlay::new();
-        shape.set_child(Some(&panel));
-        shape.add_overlay(&fillet(Edge::Right, false, FILLET));
-        let corner = fillet(Edge::Bottom, false, FILLET);
-        corner.set_halign(gtk::Align::Start);
-        shape.add_overlay(&corner);
-        let slide = super::slide::Slide::default();
+        let slide = Slide::default();
         slide.set_halign(gtk::Align::End);
-        slide.set_valign(gtk::Align::End);
-        slide.set_margin_end(FRAME);
-        slide.set_margin_bottom(FRAME);
-        slide.set_child(&shape);
-        overlay.add_overlay(&slide);
-        window.set_child(Some(&overlay));
+        slide.set_valign(gtk::Align::Start);
+        slide.set_margin_top(GAP);
+        slide.set_margin_start(SHADOW);
+        slide.set_margin_end(INSET);
+        slide.set_margin_bottom(INSET);
+        slide.set_child(&panel);
+        window.set_child(Some(&slide));
         let this = Rc::new(Self {
             window,
             slide,
+            catcher: click_away(app),
             open: Cell::new(false),
         });
-        let weak = Rc::downgrade(&this);
-        let click = gtk::GestureClick::new();
-        click.connect_released(move |_, _, _, _| {
-            if let Some(s) = weak.upgrade() {
-                s.hide();
+        let close = |s: &Rc<Self>| {
+            let weak = Rc::downgrade(s);
+            move || {
+                if let Some(s) = weak.upgrade() {
+                    s.hide();
+                }
             }
-        });
-        backdrop.add_controller(click);
+        };
+        close_on_click(&this.catcher, None, close(&this));
+        close_on_click(&this.window, Some(panel.upcast()), close(&this));
         let weak = Rc::downgrade(&this);
         this.window.connect_close_request(move |_| {
             if let Some(s) = weak.upgrade() {
@@ -546,30 +416,44 @@ impl Drawer {
     pub fn is_open(&self) -> bool {
         self.open.get()
     }
+    /// Just past the edge of the screen.
+    fn away(&self) -> Pose {
+        Pose {
+            x: self.slide.natural_size().0 - SHADOW as f32 + 2. * INSET as f32,
+            ..Pose::REST
+        }
+    }
     pub fn show(self: &Rc<Self>, monitor: Option<&gtk::gdk::Monitor>) {
         if let Some(monitor) = monitor
             && self.window.monitor().as_ref() != Some(monitor)
         {
             self.window.set_visible(false);
+            self.catcher.set_visible(false);
             self.window.set_monitor(Some(monitor));
+            self.catcher.set_monitor(Some(monitor));
         }
-        // Flies in diagonally from beyond the corner.
         if !self.window.is_visible() {
-            let (width, height) = self.slide.natural_size();
-            self.slide.drag_to(width, height);
+            self.slide.place(self.away());
         }
         self.open.set(true);
         self.window.set_keyboard_mode(KeyboardMode::OnDemand);
+        self.slide.spring_to(Pose::REST, slide::ARRIVE, || {});
+        self.catcher.present();
         self.window.present();
-        self.slide.glide((0., 0.), 260, || {});
+        // As for a panel: a key meant for the window behind must not land on its switch.
+        let window = self.window.clone();
+        glib::idle_add_local_once(move || {
+            gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>)
+        });
     }
     pub fn hide(self: &Rc<Self>) {
         self.open.set(false);
-        self.window.set_keyboard_mode(KeyboardMode::None);
         let s = self.clone();
-        self.slide.glide(self.slide.natural_size(), 220, move || {
+        self.slide.spring_to(self.away(), slide::LEAVE, move || {
             if !s.open.get() {
+                s.window.set_keyboard_mode(KeyboardMode::None);
                 s.window.set_visible(false);
+                s.catcher.set_visible(false);
             }
         });
     }
@@ -584,11 +468,12 @@ struct Indicator {
 struct Bar {
     monitor: gtk::gdk::Monitor,
     window: gtk::ApplicationWindow,
-    frame: [gtk::ApplicationWindow; 3],
+    dock: Rc<Dock>,
+    app: gtk::Label,
     notifications: Indicator,
-    /// The paired phone: its battery and link, framed; hidden without one.
+    /// The paired phone: its battery while connected, dimmed while away, red
+    /// when the link is broken; hidden until a phone has paired.
     phone: Indicator,
-    phone_battery: gtk::Image,
     tray: Indicator,
     record: Indicator,
     wifi: Indicator,
@@ -598,13 +483,21 @@ struct Bar {
     battery: Indicator,
     clock: gtk::Label,
     workspaces: gtk::Box,
-    workspace_key: String,
+    /// The accent gliding behind the active workspace.
+    pill: Slide,
+    workspace_ids: Vec<i64>,
+    workspace_active: Option<i64>,
 }
 pub struct Bars {
     app: gtk::Application,
     bars: RefCell<Vec<Bar>>,
     open: Open,
     surface: Rc<Surface>,
+    osd: Rc<Osd>,
+    /// Applications by window class, and what the dock keeps at hand.
+    apps: RefCell<dock::Apps>,
+    /// The compositor's last state, for what depends on it and something else.
+    windows: RefCell<Option<super::workspaces::State>>,
     /// Live notifications and do not disturb, for bars created later.
     notices: Cell<(usize, bool)>,
     tray_count: Cell<usize>,
@@ -612,6 +505,8 @@ pub struct Bars {
     recording: Cell<Option<Instant>>,
     /// Volume and brightness as last known, and when the wheel last set them.
     levels: Cell<[(Option<u8>, Option<Instant>); 2]>,
+    /// The levels last shown, so that only a change brings up the overlay.
+    shown: Cell<[Option<(u8, bool)>; 2]>,
     setters: [std::sync::mpsc::Sender<u8>; 2],
     this: std::rc::Weak<Self>,
 }
@@ -635,6 +530,31 @@ fn setter(op: &'static str) -> std::sync::mpsc::Sender<u8> {
 }
 /// How long a wheel change outweighs the state read before it.
 const WHEEL_HOLD: Duration = Duration::from_millis(1500);
+/// Width of a workspace button, and of the pill behind the active one.
+const WORKSPACE_WIDTH: i32 = 26;
+/// The Nexus mark: three nodes joined. Drawn, so that it follows the text colour.
+fn brand_mark() -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(16);
+    area.set_content_height(16);
+    area.set_valign(gtk::Align::Center);
+    area.set_draw_func(|area, cr, w, h| {
+        cr.set_source_color(&area.color());
+        let (w, h) = (f64::from(w), f64::from(h));
+        let nodes = [(0.5, 0.16), (0.14, 0.82), (0.86, 0.82)].map(|(x, y)| (x * w, y * h));
+        cr.set_line_width(1.5);
+        cr.move_to(nodes[0].0, nodes[0].1);
+        cr.line_to(nodes[1].0, nodes[1].1);
+        cr.line_to(nodes[2].0, nodes[2].1);
+        cr.close_path();
+        let _ = cr.stroke();
+        for (x, y) in nodes {
+            cr.arc(x, y, 2.5, 0., std::f64::consts::TAU);
+            let _ = cr.fill();
+        }
+    });
+    area
+}
 /// A bar label stays on one line: a wrapping one gets squeezed and clipped.
 fn bar_label(text: &str, class: &str) -> gtk::Label {
     let l = super::super::label(text, class);
@@ -650,14 +570,19 @@ impl Bars {
             bars: RefCell::new(vec![]),
             open,
             surface,
+            osd: Osd::new(app),
+            apps: RefCell::new(dock::Apps::saved()),
+            windows: RefCell::default(),
             notices: Cell::new((0, false)),
             tray_count: Cell::new(0),
             recording: Cell::new(None),
             levels: Cell::new([(None, None); 2]),
+            shown: Cell::new([None; 2]),
             setters: [setter("volume"), setter("brightness")],
             this: this.clone(),
         });
         this.sync();
+        this.follow_clock();
         let weak = Rc::downgrade(&this);
         gtk::gdk::Display::default()
             .unwrap()
@@ -668,6 +593,20 @@ impl Bars {
                 }
             });
         this
+    }
+    /// Shows the time as each minute starts, and only then.
+    fn follow_clock(self: &Rc<Self>) {
+        let second = glib::DateTime::now_local().map_or(0., |t| t.seconds());
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_secs_f64(60.05 - second), move || {
+            if let Some(this) = weak.upgrade() {
+                let time = clock_text();
+                for bar in this.bars.borrow().iter() {
+                    bar.clock.set_text(&time);
+                }
+                this.follow_clock();
+            }
+        });
     }
     fn sync(&self) {
         let model = gtk::gdk::Display::default().unwrap().monitors();
@@ -680,7 +619,7 @@ impl Bars {
                 true
             } else {
                 b.window.close();
-                b.frame.iter().for_each(gtk::ApplicationWindow::close);
+                b.dock.close();
                 false
             }
         });
@@ -689,9 +628,14 @@ impl Bars {
                 bars.push(self.create(&monitor));
             }
         }
+        drop(bars);
+        // A bar made after the compositor's last event still has to show it.
+        let state = self.windows.borrow().clone();
+        if let Some(state) = state {
+            self.workspaces(&state);
+        }
     }
     fn create(&self, monitor: &gtk::gdk::Monitor) -> Bar {
-        let frame = frame(&self.app, monitor);
         let window = gtk::ApplicationWindow::builder()
             .application(&self.app)
             .title("Nexus bar")
@@ -707,45 +651,45 @@ impl Bars {
             window.set_anchor(edge, true);
         }
         window.auto_exclusive_zone_enable();
-        let center = gtk::CenterBox::new();
-        center.add_css_class("bar-content");
-        let left = hbox(4);
-        let brand = self.button(monitor, "nexus", "Appearance", "appearance");
+        // Left: the system menu, the application in front and the workspaces.
+        let left = hbox(0);
+        left.add_css_class("bar-island");
+        let brand = self.button(monitor, "", "System", "system");
         brand.add_css_class("bar-brand");
+        brand.set_child(Some(&brand_mark()));
+        brand.update_property(&[gtk::accessible::Property::Label("System menu")]);
+        self.surface.anchor("system", monitor, &brand);
         left.append(&brand);
+        let app = bar_label("Desktop", "bar-app");
+        app.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        app.set_max_width_chars(32);
+        left.append(&app);
         let workspaces = hbox(2);
-        left.append(&workspaces);
-        center.set_start_widget(Some(&left));
-        let launcher = self.button(monitor, "", "Search applications · Super+Space", "launcher");
-        launcher.add_css_class("bar-search");
-        let middle = hbox(10);
-        middle.append(&gtk::Image::from_icon_name("system-search-symbolic"));
-        let clock = bar_label("", "bar-clock");
-        middle.append(&clock);
-        middle.append(&bar_label("Search", "bar-hint"));
-        launcher.set_child(Some(&middle));
-        // The clock stays at the centre whatever shows on either side of it.
-        let middle_group = gtk::CenterBox::new();
-        middle_group.set_center_widget(Some(&launcher));
-        let captures = hbox(2);
-        captures.set_margin_end(2);
-        let capture = self.indicator(
-            monitor,
-            "camera-photo-symbolic",
-            "Screenshot · Super+Shift+S",
-            "",
-        );
-        capture
-            .button
-            .connect_clicked(|_| run_nexus(&["screenshot", "--save"]));
-        captures.append(&capture.button);
+        workspaces.set_homogeneous(true);
+        workspaces.set_valign(gtk::Align::Center);
+        let pill_shape = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        pill_shape.add_css_class("workspace-pill");
+        pill_shape.set_size_request(WORKSPACE_WIDTH, 24);
+        let pill = Slide::default();
+        pill.set_child(&pill_shape);
+        pill.set_halign(gtk::Align::Start);
+        pill.set_valign(gtk::Align::Center);
+        pill.set_visible(false);
+        pill.set_can_target(false);
+        let track = gtk::Overlay::new();
+        track.set_child(Some(&pill));
+        track.add_overlay(&workspaces);
+        track.set_measure_overlay(&workspaces, true);
+        track.set_margin_end(4);
+        left.append(&track);
+        // Right: only what is worth a glance, then search, Control Center and the time.
+        let right = hbox(0);
+        right.add_css_class("bar-island");
         let record = self.indicator(monitor, "media-record-symbolic", "", "");
         record
             .button
             .connect_clicked(|_| run_nexus(&["screenshot", "--record"]));
         show_recording(&record, self.recording.get());
-        captures.append(&record.button);
-        middle_group.set_start_widget(Some(&captures));
         let tray = self.indicator(
             monitor,
             "application-x-executable-symbolic",
@@ -754,14 +698,6 @@ impl Bars {
         );
         tray.button.set_visible(self.tray_count.get() > 0);
         self.surface.anchor("tray", monitor, &tray.button);
-        tray.button.set_margin_start(2);
-        // The end slot is as wide as the capture buttons; keep the tray against Search.
-        tray.button.set_hexpand(true);
-        tray.button.set_halign(gtk::Align::Start);
-        middle_group.set_hexpand(false);
-        middle_group.set_end_widget(Some(&tray.button));
-        center.set_center_widget(Some(&middle_group));
-        let right = hbox(0);
         let notifications = self.indicator(
             monitor,
             "preferences-system-notifications-symbolic",
@@ -771,19 +707,25 @@ impl Bars {
         let phone = self.indicator(monitor, "phone-symbolic", "Phone", "phone");
         phone.button.add_css_class("bar-phone");
         phone.button.set_visible(false);
-        let phone_battery = gtk::Image::from_icon_name("battery-symbolic");
-        phone_battery.set_pixel_size(14);
-        if let Some(row) = phone.button.child().and_downcast::<gtk::Box>() {
-            row.insert_child_after(&phone_battery, Some(&phone.icon));
-        }
-        let wifi = self.indicator(monitor, "network-wireless-symbolic", "Wi-Fi", "wifi");
-        let bluetooth = self.indicator(monitor, "bluetooth-symbolic", "Bluetooth", "bluetooth");
-        let sound = self.indicator(monitor, "audio-volume-high-symbolic", "Sound", "sound");
+        let wifi = self.indicator(monitor, "network-wireless-symbolic", "Wi-Fi", "quick-wifi");
+        let bluetooth = self.indicator(
+            monitor,
+            "bluetooth-symbolic",
+            "Bluetooth",
+            "quick-bluetooth",
+        );
+        bluetooth.button.set_visible(false);
+        let sound = self.indicator(
+            monitor,
+            "audio-volume-high-symbolic",
+            "Sound",
+            "quick-sound",
+        );
         let brightness = self.indicator(
             monitor,
             "display-brightness-symbolic",
             "Brightness",
-            "display",
+            "quick-display",
         );
         let battery = self.indicator(monitor, "battery-symbolic", "Battery", "battery");
         self.surface.anchor("battery", monitor, &battery.button);
@@ -801,14 +743,17 @@ impl Bars {
             });
             indicator.button.add_controller(scroll);
         }
-        let power = self.indicator(
+        let search = self.indicator(
             monitor,
-            "system-shutdown-symbolic",
-            "Sleep, restart or shut down",
-            "power",
+            "system-search-symbolic",
+            "Search applications · Super+Space",
+            "launcher",
         );
-        power.button.add_css_class("bar-power");
+        let quick = self.indicator(monitor, "view-grid-symbolic", "Control Center", "quick");
+        self.surface.anchor("quick", monitor, &quick.button);
         for b in [
+            &record,
+            &tray,
             &phone,
             &notifications,
             &wifi,
@@ -816,10 +761,18 @@ impl Bars {
             &sound,
             &brightness,
             &battery,
-            &power,
+            &search,
+            &quick,
         ] {
             right.append(&b.button);
         }
+        let clock_button = self.button(monitor, "", "Notifications and calendar", "notifications");
+        let clock = bar_label(&clock_text(), "bar-clock");
+        clock_button.set_child(Some(&clock));
+        right.append(&clock_button);
+        let center = gtk::CenterBox::new();
+        center.add_css_class("bar-content");
+        center.set_start_widget(Some(&left));
         center.set_end_widget(Some(&right));
         center.set_hexpand(true);
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -832,10 +785,17 @@ impl Bars {
         Bar {
             monitor: monitor.clone(),
             window,
-            frame,
+            dock: Dock::new(&self.app, monitor, {
+                let shell = self.this.clone();
+                Rc::new(move |id, keep| {
+                    if let Some(shell) = shell.upgrade() {
+                        shell.pin(id, keep);
+                    }
+                })
+            }),
+            app,
             notifications,
             phone,
-            phone_battery,
             tray,
             record,
             wifi,
@@ -845,7 +805,9 @@ impl Bars {
             battery,
             clock,
             workspaces,
-            workspace_key: String::new(),
+            pill,
+            workspace_ids: vec![],
+            workspace_active: None,
         }
     }
     fn button(
@@ -921,20 +883,43 @@ impl Bars {
         levels[which] = (Some(next), Some(Instant::now()));
         self.levels.set(levels);
         let _ = self.setters[which].send(next);
-        for bar in self.bars.borrow().iter() {
-            let indicator = if which == VOLUME {
-                &bar.sound
+        let muted = which == VOLUME && self.shown.get()[which].is_some_and(|shown| shown.1);
+        self.show_level(which, next, muted);
+    }
+    /// Brings up the overlay when a level differs from the last one shown; the
+    /// first reading after startup is not a change.
+    fn show_level(&self, which: usize, value: u8, muted: bool) {
+        let mut shown = self.shown.get();
+        let was = shown[which].replace((value, muted));
+        self.shown.set(shown);
+        if was.is_some_and(|was| was != (value, muted)) {
+            if which == VOLUME {
+                self.osd
+                    .show(sound_icon(muted, value), if muted { 0 } else { value });
             } else {
-                &bar.brightness
-            };
-            indicator.value.set_text(&format!("{next}%"));
+                self.osd.show("display-brightness-symbolic", value);
+            }
+        }
+    }
+    /// The backlight as read just now, faster than the daemon's state follows it.
+    pub fn brightness(&self, value: u8) {
+        let mut levels = self.levels.get();
+        if levels[BRIGHTNESS]
+            .1
+            .is_none_or(|t| t.elapsed() > WHEEL_HOLD)
+        {
+            levels[BRIGHTNESS].0 = Some(value);
+            self.levels.set(levels);
+            self.show_level(BRIGHTNESS, value, false);
         }
     }
     /// `read` from the daemon, unless the wheel changed it just before.
     fn level(&self, which: usize, read: Option<u8>) -> Option<u8> {
         let mut levels = self.levels.get();
+        // The backlight is read directly and more often than the daemon reads it.
+        let live = which == BRIGHTNESS && levels[which].0.is_some();
         if levels[which].1.is_none_or(|t| t.elapsed() > WHEEL_HOLD) {
-            levels[which] = (read, None);
+            levels[which] = (if live { levels[which].0 } else { read }, None);
             self.levels.set(levels);
         }
         levels[which].0
@@ -949,68 +934,44 @@ impl Bars {
         }
     }
     pub fn update(&self, s: &Snapshot) {
-        let time = glib::DateTime::now_local()
-            .ok()
-            .map(|t| {
-                let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-                let months = [
-                    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
-                    "Dec",
-                ];
-                format!(
-                    "{} {:02} {}  ·  {:02}:{:02}",
-                    days[(t.day_of_week() - 1) as usize],
-                    t.day_of_month(),
-                    months[(t.month() - 1) as usize],
-                    t.hour(),
-                    t.minute()
-                )
-            })
-            .unwrap_or_default();
+        // Also here: the minute's timer stands still while the machine sleeps.
+        let time = clock_text();
         let battery = battery();
         let (volume, brightness) = (
             self.level(VOLUME, s.volume),
             self.level(BRIGHTNESS, s.brightness),
         );
-        let phone = s.phone.name.as_ref().map(|name| {
-            let info = s.phone.info.clone().unwrap_or_default();
-            let level = info["battery"]["level"].as_u64();
-            let charging = info["battery"]["charging"] == true;
-            let network = info["network"].as_str().unwrap_or("Connected");
-            let tooltip = match level {
-                Some(l) => format!(
-                    "{name} · {l}%{} · {network}",
-                    if charging { " charging" } else { "" }
-                ),
-                None => format!("{name} · {network}"),
-            };
-            (level, charging, tooltip)
-        });
+        if let Some(volume) = volume {
+            self.show_level(VOLUME, volume, s.muted);
+        }
+        let phone = phone_indicator(&s.phone);
         for bar in self.bars.borrow().iter() {
             bar.clock.set_text(&time);
             bar.phone.button.set_visible(phone.is_some());
-            if let Some((level, charging, tooltip)) = &phone {
+            if let Some((class, value, tooltip)) = &phone {
                 bar.phone.button.set_tooltip_text(Some(tooltip));
-                bar.phone_battery.set_visible(level.is_some());
-                bar.phone.value.set_visible(level.is_some());
-                if let Some(l) = level {
-                    bar.phone_battery.set_icon_name(Some(&format!(
-                        "battery-level-{}{}-symbolic",
-                        l.min(&100) / 10 * 10,
-                        if *charging { "-charging" } else { "" }
-                    )));
-                    bar.phone.value.set_text(&format!("{l}%"));
+                for c in ["away", "error", "low"] {
+                    bar.phone.button.remove_css_class(c);
                 }
+                if !class.is_empty() {
+                    bar.phone.button.add_css_class(class);
+                }
+                bar.phone.value.set_visible(!value.is_empty());
+                bar.phone.value.set_text(value);
             }
             let network = s.networks.iter().find(|n| n.connected());
+            // The cable carries the traffic whenever it is up.
+            let wired = s.wired.as_ref().filter(|w| w.state == "connected");
             bar.wifi.icon.set_icon_name(Some(match network {
+                _ if wired.is_some() => "network-wired-symbolic",
                 Some(n) => signal_icon(n.signal),
                 None if s.wifi => "network-wireless-offline-symbolic",
                 None => "network-wireless-disabled-symbolic",
             }));
             bar.wifi.button.set_tooltip_text(Some(
-                s.wifi_error
-                    .as_deref()
+                wired
+                    .map(|_| "Ethernet")
+                    .or(s.wifi_error.as_deref())
                     .or(network.map(|n| n.name.as_str()))
                     .unwrap_or(if s.wifi {
                         "Wi-Fi · Not connected"
@@ -1026,40 +987,27 @@ impl Bars {
             } else {
                 "bluetooth-symbolic"
             }));
+            // Worth a place in the bar only while something is connected.
+            bar.bluetooth.button.set_visible(connected > 0);
             bar.bluetooth
                 .button
-                .set_tooltip_text(Some(&format!("Bluetooth · {connected} connected devices")));
+                .set_tooltip_text(Some(&format!("Bluetooth · {connected} connected")));
             bar.sound
                 .icon
-                .set_icon_name(Some(if s.muted || volume == Some(0) {
-                    "audio-volume-muted-symbolic"
-                } else if volume.unwrap_or(0) < 35 {
-                    "audio-volume-low-symbolic"
-                } else if volume.unwrap_or(0) < 70 {
-                    "audio-volume-medium-symbolic"
-                } else {
-                    "audio-volume-high-symbolic"
-                }));
-            bar.sound.value.set_visible(!s.muted && volume.is_some());
-            bar.sound
-                .value
-                .set_text(&volume.map(|v| format!("{v}%")).unwrap_or_default());
-            bar.sound.button.set_tooltip_text(Some(if s.muted {
-                "Sound · Muted"
-            } else {
-                "Sound settings"
+                .set_icon_name(Some(sound_icon(s.muted, volume.unwrap_or(0))));
+            bar.sound.button.set_tooltip_text(Some(&match volume {
+                _ if s.muted => "Sound · Muted".to_string(),
+                Some(v) => format!("Sound · {v}%"),
+                None => "Sound".to_string(),
             }));
-            bar.brightness.value.set_visible(brightness.is_some());
-            bar.brightness
-                .value
-                .set_text(&brightness.map(|v| format!("{v}%")).unwrap_or_default());
+            bar.brightness.button.set_tooltip_text(Some(
+                &brightness.map_or("Brightness".to_string(), |v| format!("Brightness · {v}%")),
+            ));
             bar.battery.button.set_visible(battery.is_some());
             if let Some((capacity, charging)) = battery {
-                bar.battery.icon.set_icon_name(Some(&format!(
-                    "battery-level-{}{}-symbolic",
-                    (capacity / 10) * 10,
-                    if charging { "-charging" } else { "" }
-                )));
+                bar.battery
+                    .icon
+                    .set_icon_name(Some(&battery_icon(capacity.into(), charging)));
                 bar.battery.value.set_visible(true);
                 bar.battery.value.set_text(&format!("{capacity}%"));
                 bar.battery.button.set_tooltip_text(Some(if charging {
@@ -1081,10 +1029,34 @@ impl Bars {
             show_notices(&bar.notifications, count, quiet);
         }
     }
-    pub fn workspaces(&self, workspaces: &serde_json::Value, monitors: &serde_json::Value) {
+    fn pin(&self, id: &str, keep: bool) {
+        {
+            let mut apps = self.apps.borrow_mut();
+            apps.set_kept(id, keep);
+            apps.save();
+        }
+        let state = self.windows.borrow().clone();
+        if let Some(state) = state {
+            self.workspaces(&state);
+        }
+    }
+    /// The applications the dock and the bar name, as the daemon lists them.
+    pub fn catalogue(&self, catalogue: &nexus_control::launcher::Catalogue) {
+        self.apps.borrow_mut().update(catalogue);
+        // Windows were named and docked with what was known before.
+        let state = self.windows.borrow().clone();
+        if let Some(state) = state {
+            self.workspaces(&state);
+        }
+    }
+    pub fn workspaces(&self, state: &super::workspaces::State) {
+        *self.windows.borrow_mut() = Some(state.clone());
+        let (workspaces, monitors, clients, focused) = state;
         let Some(workspaces) = workspaces.as_array() else {
             return;
         };
+        let apps = self.apps.borrow();
+        let docked = apps.docked(clients);
         for bar in self.bars.borrow_mut().iter_mut() {
             let connector = bar.monitor.connector().unwrap_or_default();
             let active = monitors
@@ -1103,20 +1075,34 @@ impl Bars {
                 .collect();
             ids.sort();
             ids.dedup();
-            let key = format!("{ids:?}:{active}");
-            if key == bar.workspace_key {
-                continue;
+            bar.show_workspaces(ids, active);
+            // The application in front of this screen, as the bar's heading.
+            let front = (focused["workspace"]["id"].as_i64() == Some(active))
+                .then(|| focused["class"].as_str())
+                .flatten();
+            bar.app
+                .set_text(&front.map_or("Desktop".to_string(), |class| apps.name(class)));
+            let empty = !clients.as_array().is_some_and(|all| {
+                all.iter()
+                    .any(|c| c["workspace"]["id"].as_i64() == Some(active))
+            });
+            bar.dock.update(&docked, empty);
+        }
+    }
+}
+impl Bar {
+    /// The buttons change with the workspaces; the pill alone follows the focus.
+    fn show_workspaces(&mut self, ids: Vec<i64>, active: i64) {
+        let same = ids == self.workspace_ids;
+        if !same {
+            while let Some(c) = self.workspaces.first_child() {
+                self.workspaces.remove(&c);
             }
-            bar.workspace_key = key;
-            while let Some(c) = bar.workspaces.first_child() {
-                bar.workspaces.remove(&c);
-            }
-            for id in ids {
+            for id in &ids {
+                let id = *id;
                 let b = gtk::Button::with_label(&id.to_string());
                 b.add_css_class("workspace");
-                if id == active {
-                    b.add_css_class("active");
-                }
+                b.set_tooltip_text(Some(&format!("Workspace {id}")));
                 b.connect_clicked(move |_| {
                     std::thread::spawn(move || {
                         let _ = nexus_control::backend::run(
@@ -1125,22 +1111,128 @@ impl Bars {
                         );
                     });
                 });
-                bar.workspaces.append(&b);
+                self.workspaces.append(&b);
             }
         }
+        if same && self.workspace_active == Some(active) {
+            return;
+        }
+        let mut child = self.workspaces.first_child();
+        while let Some(c) = child {
+            let is_active = c
+                .downcast_ref::<gtk::Button>()
+                .and_then(|b| b.label())
+                .is_some_and(|l| l == active.to_string());
+            if is_active {
+                c.add_css_class("active");
+            } else {
+                c.remove_css_class("active");
+            }
+            child = c.next_sibling();
+        }
+        let place = ids.iter().position(|id| *id == active);
+        self.pill.set_visible(place.is_some());
+        if let Some(place) = place {
+            let x = place as f32 * (WORKSPACE_WIDTH + 2) as f32;
+            let target = Pose { x, ..Pose::REST };
+            // From where it stands only if it was standing somewhere.
+            if self.workspace_active.is_some() {
+                self.pill.spring_to(target, slide::SNAP, || {});
+            } else {
+                self.pill.place(target);
+            }
+        }
+        self.workspace_ids = ids;
+        self.workspace_active = Some(active);
     }
 }
+fn clock_text() -> String {
+    glib::DateTime::now_local()
+        .ok()
+        .map(|t| {
+            let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+            let months = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
+            format!(
+                "{} {} {}  {:02}:{:02}",
+                days[(t.day_of_week() - 1) as usize],
+                t.day_of_month(),
+                months[(t.month() - 1) as usize],
+                t.hour(),
+                t.minute()
+            )
+        })
+        .unwrap_or_default()
+}
+/// The path of a binary that may have been replaced while running, as `install.sh`
+/// does: Linux then calls it `…/nexus (deleted)`, and the new one is at the old path.
+pub fn live_path(exe: std::path::PathBuf) -> std::path::PathBuf {
+    exe.to_str()
+        .and_then(|path| path.strip_suffix(" (deleted)"))
+        .map_or_else(|| exe.clone(), Into::into)
+}
 /// Runs `nexus` with `args`; the request reaches this process through its socket.
-fn run_nexus(args: &[&str]) {
-    let exe = std::env::current_exe().unwrap_or_else(|_| "nexus".into());
-    match std::process::Command::new(exe).args(args).spawn() {
-        Ok(mut child) => {
-            std::thread::spawn(move || child.wait());
-        }
-        Err(e) => eprintln!("Could not run nexus {}: {e}", args.join(" ")),
+/// A failure is said on screen: a Lock that did nothing must not pass for a locked
+/// screen, and its panel is gone by now.
+pub fn run_nexus(args: &[&str]) {
+    let exe = std::env::current_exe().map_or_else(|_| "nexus".into(), live_path);
+    let spawned = std::process::Command::new(exe).args(args).spawn();
+    let command = args.join(" ");
+    std::thread::spawn(move || {
+        let why = match spawned.and_then(|mut child| child.wait()) {
+            Err(e) => e.to_string(),
+            Ok(status) => match status.code() {
+                Some(code) if code != 0 => format!("It exited with status {code}."),
+                _ => return,
+            },
+        };
+        say_nexus_failed(&command, &why);
+    });
+}
+/// Off the main thread: the notification server may be this very process.
+fn say_nexus_failed(command: &str, why: &str) {
+    eprintln!("nexus {command} failed: {why}");
+    let summary = if command == "lock" {
+        "The screen is not locked".to_string()
+    } else {
+        format!("Could not run nexus {command}")
+    };
+    let sent = zbus::blocking::Connection::session().and_then(|bus| {
+        bus.call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &(
+                "Nexus",
+                0u32,
+                "dialog-error-symbolic",
+                summary,
+                why,
+                Vec::<&str>::new(),
+                std::collections::HashMap::<&str, zbus::zvariant::Value>::new(),
+                -1i32,
+            ),
+        )
+    });
+    if let Err(e) = sent {
+        eprintln!("Could not say so: {e}");
+    }
+}
+/// The speaker for a level: crossed out when muted or at nothing.
+pub fn sound_icon(muted: bool, level: u8) -> &'static str {
+    match level {
+        _ if muted => "audio-volume-muted-symbolic",
+        0 => "audio-volume-muted-symbolic",
+        1..35 => "audio-volume-low-symbolic",
+        35..70 => "audio-volume-medium-symbolic",
+        _ => "audio-volume-high-symbolic",
     }
 }
 fn show_recording(indicator: &Indicator, started: Option<Instant>) {
+    // Only a recording in progress takes room in the bar; Control Center starts one.
+    indicator.button.set_visible(started.is_some());
     let Some(started) = started else {
         indicator.button.remove_css_class("bar-recording");
         indicator.icon.set_icon_name(Some("media-record-symbolic"));
@@ -1162,6 +1254,8 @@ fn show_recording(indicator: &Indicator, started: Option<Instant>) {
     indicator.button.set_tooltip_text(Some("Stop recording"));
 }
 fn show_notices(indicator: &Indicator, count: usize, quiet: bool) {
+    // The clock opens the list: the bell only says there is something in it.
+    indicator.button.set_visible(count > 0 || quiet);
     indicator.icon.set_icon_name(Some(if quiet {
         "notifications-disabled-symbolic"
     } else {
@@ -1180,30 +1274,77 @@ fn show_notices(indicator: &Indicator, count: usize, quiet: bool) {
 }
 /// The last battery reading, taken off the UI thread by [`read_battery`].
 static BATTERY: std::sync::Mutex<Option<(u8, bool)>> = std::sync::Mutex::new(None);
-fn battery() -> Option<(u8, bool)> {
+pub fn battery() -> Option<(u8, bool)> {
     *BATTERY.lock().unwrap()
 }
 /// Reading `capacity` asks the embedded controller through ACPI, which takes
 /// about 100 ms on some laptops: it must never block the main loop.
 pub fn read_battery() {
-    *BATTERY.lock().unwrap() = query_battery();
+    *BATTERY.lock().unwrap() = nexus_control::power::read_battery();
 }
-fn query_battery() -> Option<(u8, bool)> {
-    for entry in std::fs::read_dir("/sys/class/power_supply").ok()?.flatten() {
-        let p = entry.path();
-        if std::fs::read_to_string(p.join("type")).ok()?.trim() != "Battery" {
-            continue;
-        }
-        let n = std::fs::read_to_string(p.join("capacity"))
-            .ok()?
-            .trim()
-            .parse()
-            .ok()?;
-        let charging = std::fs::read_to_string(p.join("status"))
-            .unwrap_or_default()
-            .trim()
-            == "Charging";
-        return Some((n, charging));
+
+/// The Adwaita icon for a battery at `level` percent. Full, it is "charged"
+/// rather than "charging": there is no full charging icon.
+fn battery_icon(level: u64, charging: bool) -> String {
+    let level = level.min(100) / 10 * 10;
+    let state = match (charging, level) {
+        (false, _) => "",
+        (true, 100) => "-charged",
+        (true, _) => "-charging",
+    };
+    format!("battery-level-{level}{state}-symbolic")
+}
+
+/// The bar's phone: its class (`away`, `error`, `low`), its battery text and
+/// its tooltip; `None` until a phone has paired.
+fn phone_indicator(p: &nexus_control::phone::PhoneState) -> Option<(&'static str, String, String)> {
+    let Some(name) = &p.name else {
+        let last = p.last.as_ref()?;
+        return Some(match &p.error {
+            Some(e) => ("error", String::new(), format!("{last} · {e}")),
+            None => ("away", String::new(), format!("{last} · Not connected")),
+        });
+    };
+    let info = p.info.clone().unwrap_or_default();
+    let name = info["model"].as_str().unwrap_or(name);
+    let network = info["network"].as_str().unwrap_or("Connected");
+    let Some(level) = info["battery"]["level"].as_u64() else {
+        return Some(("", String::new(), format!("{name} · {network}")));
+    };
+    let charging = info["battery"]["charging"] == true;
+    Some((
+        if level <= 15 && !charging { "low" } else { "" },
+        format!("{level}%"),
+        format!(
+            "{name} · {level}%{} · {network}",
+            if charging { ", charging" } else { "" }
+        ),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_replaced_binary_is_found_at_its_path() {
+        let path = |p: &str| std::path::PathBuf::from(p);
+        assert_eq!(live_path(path("/bin/nexus (deleted)")), path("/bin/nexus"));
+        assert_eq!(live_path(path("/bin/nexus")), path("/bin/nexus"));
+        // Why `current_exe().with_file_name(…)` for a sibling needs no such care.
+        assert_eq!(
+            path("/bin/nexus (deleted)").with_file_name("nexusd"),
+            path("/bin/nexusd")
+        );
     }
-    None
+    #[test]
+    #[ignore = "needs a notification server: run it inside the lab"]
+    fn a_failed_lock_is_said() {
+        say_nexus_failed("lock", "No such file or directory (os error 2)");
+    }
+    #[test]
+    fn shadow_room_stays_on_the_screen() {
+        assert_eq!(shadow_room(700, 380, 2048), (660, 40, 40));
+        assert_eq!(shadow_room(8, 380, 2048), (0, 8, 40));
+        assert_eq!(shadow_room(1660, 380, 2048), (1620, 40, 8));
+    }
 }

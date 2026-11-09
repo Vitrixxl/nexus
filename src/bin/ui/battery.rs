@@ -69,21 +69,20 @@ impl Battery {
                 }
             });
         }
+        // Followed only while open.
         let weak = Rc::downgrade(&this);
-        this.widget.connect_map(move |_| {
-            if let Some(this) = weak.upgrade() {
+        this.widget.connect_map(move |widget| {
+            let Some(this) = weak.upgrade() else { return };
+            this.refresh();
+            let weak = Rc::downgrade(&this);
+            let widget = widget.clone();
+            glib::timeout_add_local(Duration::from_secs(3), move || {
+                let Some(this) = weak.upgrade().filter(|_| widget.is_mapped()) else {
+                    return glib::ControlFlow::Break;
+                };
                 this.refresh();
-            }
-        });
-        let weak = Rc::downgrade(&this);
-        glib::timeout_add_local(Duration::from_secs(3), move || {
-            let Some(this) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if this.widget.is_mapped() {
-                this.refresh();
-            }
-            glib::ControlFlow::Continue
+                glib::ControlFlow::Continue
+            });
         });
         this
     }

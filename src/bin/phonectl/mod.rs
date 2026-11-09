@@ -17,10 +17,28 @@ nexus phone mv FROM TO
 nexus phone rm PATH...
 nexus phone mkdir PATH
 nexus phone sms NUMBER TEXT...
-nexus phone disconnect";
+nexus phone disconnect
+
+The screen (JSON on stdout; x, y in screen pixels, as in `tree`'s boxes):
+nexus phone tree                       what is on screen: windows, then texts, boxes, actions
+nexus phone shot [FILE.jpg]            a screenshot; prints where, and the screen's size
+nexus phone tap X Y
+nexus phone hold X Y
+nexus phone swipe X Y X2 Y2 [MS]
+nexus phone type TEXT...               into the focused field
+nexus phone key KEY                    back home recents notifications quick lock wake backspace enter
+nexus phone apps
+nexus phone open PACKAGE
+nexus phone mirror                     a window on the live screen";
 
 fn call(op: &str, args: serde_json::Value) -> Result<serde_json::Value> {
     phone(op, args).map_err(anyhow::Error::msg)
+}
+fn number(arg: &str) -> Result<f64> {
+    match arg.parse() {
+        Ok(n) if n >= 0.0 => Ok(n),
+        _ => bail!("Not a position: {arg}"),
+    }
 }
 /// A phone path: relative ones start at the storage root.
 fn remote(path: &str, root: &mut Option<String>) -> Result<String> {
@@ -149,6 +167,43 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         "disconnect" => {
             call("disconnect", serde_json::Value::Null)?;
+        }
+        "tree" | "apps" => println!("{}", call(&format!("screen_{cmd}"), json!({}))?),
+        "shot" => {
+            let r = call("screen_shot", json!({}))?;
+            let path = match rest.first() {
+                Some(file) => PathBuf::from(file),
+                None => glib::user_cache_dir().join("nexus/phone-shot.jpg"),
+            };
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(
+                &path,
+                glib::base64_decode(r["b64"].as_str().unwrap_or_default()),
+            )?;
+            println!("{}", json!({ "path": path, "w": r["w"], "h": r["h"] }));
+        }
+        "tap" | "hold" if rest.len() == 2 => {
+            let (x, y) = (number(&rest[0])?, number(&rest[1])?);
+            call(&format!("screen_{cmd}"), json!({ "x": x, "y": y }))?;
+        }
+        "swipe" if rest.len() == 4 || rest.len() == 5 => {
+            let mut p = rest.iter().map(|a| number(a)).collect::<Result<Vec<_>>>()?;
+            p.resize(5, 300.0);
+            call(
+                "screen_swipe",
+                json!({ "x": p[0], "y": p[1], "x2": p[2], "y2": p[3], "ms": p[4] as u64 }),
+            )?;
+        }
+        "type" if !rest.is_empty() => {
+            call("screen_text", json!({ "text": rest.join(" ") }))?;
+        }
+        "key" if rest.len() == 1 => {
+            call("screen_key", json!({ "key": rest[0] }))?;
+        }
+        "open" if rest.len() == 1 => {
+            call("screen_open", json!({ "package": rest[0] }))?;
         }
         _ => bail!("Usage:\n{USAGE}"),
     }

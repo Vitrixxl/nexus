@@ -12,11 +12,11 @@ out=${1:-$HOME/.local/share/nexus/nexus-phone.apk}
 keystore=$HOME/.local/share/nexus/phone.keystore
 rm -rf build
 mkdir -p build/classes "$(dirname "$out")"
-javac -Xlint:-options --release 17 -classpath "$jar" -d build/classes $(find src -name '*.java')
-"$tools/d8" --release --min-api 26 --lib "$jar" --output build $(find build/classes -name '*.class')
 "$tools/aapt2" compile --dir res -o build/res.zip
 "$tools/aapt2" link -o build/base.apk -I "$jar" --manifest AndroidManifest.xml build/res.zip \
-    --min-sdk-version 26 --target-sdk-version 35
+    --java build/gen --min-sdk-version 26 --target-sdk-version 35
+javac -Xlint:-options --release 17 -classpath "$jar" -d build/classes $(find src build/gen -name '*.java')
+"$tools/d8" --release --min-api 26 --lib "$jar" --output build $(find build/classes -name '*.class')
 jar -u -M -f build/base.apk -C build classes.dex
 "$tools/zipalign" -f -p 4 build/base.apk build/aligned.apk
 [ -f "$keystore" ] || keytool -genkeypair -keystore "$keystore" -storepass nexusphone \

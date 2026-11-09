@@ -1,16 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- An N traced like a circuit between two nodes; also the themed (monochrome) icon. -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
+<!-- An N traced like a circuit between two nodes, in Nexus blue; also the themed (monochrome) icon. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:pathData="M39,62.5 L39,39 L69,69 L69,45.5" android:strokeWidth="7"
-        android:strokeLineCap="round" android:strokeLineJoin="round">
-        <aapt:attr name="android:strokeColor">
-            <gradient android:type="linear" android:startX="38" android:startY="72" android:endX="70" android:endY="36"
-                android:startColor="#7AA2F7" android:endColor="#BB9AF7"/>
-        </aapt:attr>
-    </path>
-    <path android:fillColor="#7AA2F7" android:fillType="evenOdd"
+    <path android:pathData="M39,62.5 L39,39 L69,69 L69,45.5" android:strokeWidth="7" android:strokeColor="#0A84FF"
+        android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:fillColor="#F4F4F5" android:fillType="evenOdd"
         android:pathData="M32.5,69a6.5,6.5 0 1,0 13,0a6.5,6.5 0 1,0 -13,0z M36.4,69a2.6,2.6 0 1,0 5.2,0a2.6,2.6 0 1,0 -5.2,0z"/>
-    <path android:fillColor="#BB9AF7" android:fillType="evenOdd"
+    <path android:fillColor="#F4F4F5" android:fillType="evenOdd"
         android:pathData="M62.5,39a6.5,6.5 0 1,0 13,0a6.5,6.5 0 1,0 -13,0z M66.4,39a2.6,2.6 0 1,0 5.2,0a2.6,2.6 0 1,0 -5.2,0z"/>
 </vector>

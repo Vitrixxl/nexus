@@ -3,6 +3,7 @@ pub mod backend;
 pub mod launcher;
 pub mod monitor;
 pub mod night;
+pub mod notesync;
 pub mod notifications;
 pub mod phone;
 pub mod phone_client;
@@ -39,6 +40,16 @@ impl Network {
     pub fn connected(&self) -> bool {
         self.state == "connected"
     }
+}
+/// The wired adapter, which can be used instead of Wi-Fi or with it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Wired {
+    /// Its interface, such as enp3s0.
+    pub name: String,
+    /// connecting, connected, disconnecting, failed, or empty when idle.
+    pub state: String,
+    /// Whether a cable is plugged in.
+    pub cable: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Device {
@@ -85,6 +96,8 @@ pub struct Snapshot {
     pub wifi_error: Option<String>,
     #[serde(default)]
     pub wifi_scanning: bool,
+    #[serde(default)]
+    pub wired: Option<Wired>,
     pub bluetooth: bool,
     pub devices: Vec<Device>,
     pub bluetooth_error: Option<String>,
@@ -137,7 +150,8 @@ pub enum Request {
     Theme {
         settings: theme::Settings,
     },
-    /// A request for the paired phone; `pull`, `push` and `disconnect` are the daemon's own.
+    /// A request for the paired phone; `pull`, `push`, `disconnect`, `clipboard` and
+    /// `notes_sync` are the daemon's own.
     Phone {
         op: String,
         #[serde(default)]
@@ -220,12 +234,19 @@ pub fn read_line(stream: &UnixStream) -> Result<String> {
     }
     Ok(line)
 }
+/// `value` as one line in one write. Serialized directly to the socket, every
+/// token is a system call that wakes the reader.
+pub fn send_line(stream: &mut UnixStream, value: &impl Serialize) -> Result<()> {
+    let mut line = serde_json::to_vec(value)?;
+    line.push(b'\n');
+    stream.write_all(&line)?;
+    Ok(())
+}
 pub fn request(request: &Request) -> Result<Reply> {
     let mut stream = UnixStream::connect(runtime()?.join("daemon.sock"))
         .context("Nexus daemon is not running")?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    serde_json::to_writer(&mut stream, request)?;
-    stream.write_all(b"\n")?;
+    send_line(&mut stream, request)?;
     Ok(serde_json::from_str(&read_line(&stream)?)?)
 }
 pub fn ensure_daemon() -> Result<()> {

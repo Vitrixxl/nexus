@@ -19,13 +19,13 @@ const FILE_MANAGER: &str = r#"<node><interface name="org.freedesktop.FileManager
 </interface></node>"#;
 /// Styles of the file views, on top of the shared Nexus stylesheet.
 const CSS: &str = r#"
-.files .files-sidebar { background: @nexus_surface; border-right: 1px solid alpha(@nexus_fg, 0.05); }
+.files .files-sidebar { background: alpha(@nexus_fg, 0.045); border-right: 1px solid alpha(@nexus_fg, 0.06); }
 .files list.files-sidebar { padding: 10px 8px; }
-.files .files-sidebar row { border-radius: 10px; padding: 4px 8px; margin: 1px 0; color: alpha(@nexus_fg, 0.85); min-height: 0; }
+.files .files-sidebar row { border-radius: 8px; padding: 4px 8px; margin: 1px 0; color: alpha(@nexus_fg, 0.85); min-height: 0; }
 .files .files-sidebar row:hover { background: alpha(@nexus_fg, 0.05); color: @nexus_fg; }
 .files .files-sidebar row:selected { background: alpha(@nexus_fg, 0.08); color: @nexus_fg; font-weight: 600; }
-.files .files-sidebar .place-icon { background: alpha(@nexus_fg, 0.07); color: alpha(@nexus_fg, 0.85); border-radius: 8px; min-width: 28px; min-height: 28px; }
-.files .files-sidebar row:selected .place-icon { background: @nexus_accent; color: @nexus_on_accent; }
+.files .files-sidebar .place-icon { color: @nexus_muted; min-width: 24px; min-height: 24px; }
+.files .files-sidebar row:selected .place-icon { color: @nexus_accent_fg; }
 .files .files-sidebar .sidebar-section { font-size: 11px; font-weight: 600; color: @nexus_muted; padding: 14px 8px 4px; }
 .files .files-header { padding: 8px 10px; }
 .files .files-header > * { margin: 0; }
@@ -33,23 +33,23 @@ const CSS: &str = r#"
 .files .files-header button:hover, .files .files-header menubutton > button:hover { background: alpha(@nexus_fg, 0.08); color: @nexus_fg; }
 .files .files-header button:checked { background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; }
 .files .files-header button:disabled { opacity: 0.35; background: transparent; }
-.files .files-header entry { min-height: 32px; padding: 0 10px; border-radius: 9px; }
+.files .files-header entry { min-height: 32px; padding: 0 10px; border-radius: 8px; }
 .files .files-header entry.path { margin: 0 6px; }
 .files gridview, .files listview { background: transparent; padding: 6px 10px; }
 .files gridview > child { padding: 10px 4px 12px; border-radius: 12px; }
 .files .band { color: @nexus_accent; }
-.files listview > row { min-height: 36px; padding: 0 8px; border-radius: 10px; }
+.files listview > row { min-height: 36px; padding: 0 8px; border-radius: 8px; }
 .files gridview > child:hover, .files listview > row:hover { background: alpha(@nexus_fg, 0.05); }
 .files gridview > child:selected, .files listview > row:selected { background: alpha(@nexus_accent, 0.16); color: @nexus_fg; }
 .files .grid-cell label { font-size: 13px; }
-.files .tile { background: alpha(@nexus_fg, 0.06); color: @nexus_muted; border-radius: 14px; }
+.files .tile { background: alpha(@nexus_fg, 0.08); color: @nexus_muted; border-radius: 12px; }
 .files .list-cell .tile { border-radius: 8px; }
-.files .tile.folder { background: alpha(@nexus_accent, 0.45); color: shade(@nexus_accent_fg, 1.25); }
-.files :selected .tile.folder { background: alpha(@nexus_accent, 0.6); }
+.files .tile.folder { background: alpha(@nexus_accent, 0.16); color: @nexus_accent_fg; }
+.files :selected .tile.folder { background: alpha(@nexus_accent, 0.28); }
 .files .file-meta { color: @nexus_muted; font-size: 12px; font-feature-settings: "tnum"; }
 .files .footer { padding: 8px 12px; border-top: 1px solid alpha(@nexus_fg, 0.05); }
-.files .footer button { min-height: 32px; padding: 0 16px; border-radius: 9px; }
-.files .footer entry { min-height: 32px; padding: 0 10px; border-radius: 9px; }
+.files .footer button { min-height: 32px; padding: 0 16px; border-radius: 8px; }
+.files .footer entry { min-height: 32px; padding: 0 10px; border-radius: 8px; }
 .files .footer dropdown > button { min-height: 32px; padding: 0 10px; }
 .files .footer .error { color: @nexus_error; }
 .files rubberband { background: alpha(@nexus_accent, 0.15); border: 1px solid @nexus_accent; border-radius: 6px; }

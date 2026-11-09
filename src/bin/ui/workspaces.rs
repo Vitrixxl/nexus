@@ -1,3 +1,4 @@
+use nexus_control::theme;
 use serde_json::Value;
 use std::{
     io::{BufRead, BufReader},
@@ -10,12 +11,22 @@ use std::{
     thread,
     time::Duration,
 };
-type State = (Value, Value);
+/// Workspaces, monitors, windows and the focused window, as Hyprland lists them.
+pub type State = (Value, Value, Value, Value);
 fn snapshot() -> anyhow::Result<State> {
     use nexus_control::backend::hypr_socket;
-    let ws = hypr_socket(".socket.sock", "j/workspaces")?;
-    let monitors = hypr_socket(".socket.sock", "j/monitors")?;
-    Ok((serde_json::from_str(&ws)?, serde_json::from_str(&monitors)?))
+    let read = |what: &str| -> anyhow::Result<Value> {
+        Ok(serde_json::from_str(&hypr_socket(
+            ".socket.sock",
+            &format!("j/{what}"),
+        )?)?)
+    };
+    Ok((
+        read("workspaces")?,
+        read("monitors")?,
+        read("clients")?,
+        read("activewindow")?,
+    ))
 }
 fn relevant(line: &str) -> bool {
     let event = line.split_once(">>").map(|(kind, _)| kind).unwrap_or("");
@@ -30,6 +41,11 @@ fn relevant(line: &str) -> bool {
             | "renameworkspace"
             | "monitoraddedv2"
             | "monitorremoved"
+            | "activewindowv2"
+            | "openwindow"
+            | "closewindow"
+            | "movewindowv2"
+            | "configreloaded"
     )
 }
 pub fn watch(tx: async_channel::Sender<State>, running: Arc<AtomicBool>) {
@@ -42,6 +58,9 @@ pub fn watch(tx: async_channel::Sender<State>, running: Arc<AtomicBool>) {
             if let Some(path) = path
                 && let Ok(stream) = UnixStream::connect(path)
             {
+                // A compositor just started, or its configuration reloaded, is back
+                // to the blur in its configuration file.
+                theme::apply_blur(&theme::load());
                 if let Ok(state) = snapshot()
                     && tx.send_blocking(state).is_err()
                 {
@@ -53,6 +72,9 @@ pub fn watch(tx: async_channel::Sender<State>, running: Arc<AtomicBool>) {
                     };
                     if !running.load(Ordering::Relaxed) {
                         return;
+                    }
+                    if line.starts_with("configreloaded") {
+                        theme::apply_blur(&theme::load());
                     }
                     if relevant(&line)
                         && let Ok(state) = snapshot()
@@ -75,6 +97,7 @@ mod tests {
         assert!(relevant("workspacev2>>2,2"));
         assert!(relevant("focusedmon>>eDP-1,1"));
         assert!(relevant("destroyworkspacev2>>3,3"));
+        assert!(relevant("openwindow>>a,1,foot,Terminal"));
         assert!(!relevant("activewindow>>foot,Terminal"));
     }
 }

@@ -263,15 +263,15 @@ mod tests {
     fn foot_has_both_themes() {
         let ini = foot_ini(&Settings::default());
         assert!(ini.contains("initial-color-theme=dark"));
-        assert!(ini.contains("[colors-dark]\nbackground=151a18\n"));
-        assert!(ini.contains("[colors-light]\nbackground=f3f4f0\n"));
+        assert!(ini.contains("[colors-dark]\nbackground=141416\n"));
+        assert!(ini.contains("[colors-light]\nbackground=f2f2f5\n"));
         assert_eq!(ini.matches("bright7=").count(), 2);
         assert!(!ini.contains("=#"));
     }
     #[test]
     fn btop_theme_is_complete() {
         let theme = btop_theme(&Settings::default());
-        assert!(theme.contains("theme[main_bg]=\"#151a18\"\n"));
+        assert!(theme.contains("theme[main_bg]=\"#141416\"\n"));
         assert_eq!(theme.matches("_start]=").count(), 9);
         assert!(!theme.contains("=\"\""));
     }
@@ -280,15 +280,15 @@ mod tests {
         let theme: serde_json::Value =
             serde_json::from_str(&t3_theme(&Settings::default())).unwrap();
         assert_eq!(theme["appearance"], "dark");
-        assert_eq!(theme["canvas"], "#151a18");
+        assert_eq!(theme["canvas"], "#141416");
         assert!(theme["accent"].as_str().unwrap().starts_with('#'));
     }
     #[test]
     fn discord_import_comes_first() {
         let css = discord_css(&Settings::default());
         assert!(css.starts_with("@import url("));
-        assert!(css.contains("--bg-4: #151a18;"));
-        assert!(css.contains("--hover: rgba(237, 242, 238, 0.06);"));
+        assert!(css.contains("--bg-4: #141416;"));
+        assert!(css.contains("--hover: rgba(244, 244, 245, 0.06);"));
     }
     #[test]
     fn nvim_colors_follow_the_mode() {
@@ -298,7 +298,7 @@ mod tests {
         };
         let lua = nvim_colors(&light);
         assert!(lua.contains("vim.o.background = \"light\""));
-        assert!(lua.contains("bg = \"#f3f4f0\""));
+        assert!(lua.contains("bg = \"#f2f2f5\""));
         assert!(lua.contains("hl(\"Normal\""));
     }
 }

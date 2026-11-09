@@ -2,21 +2,17 @@ use super::super::{hbox, label, vbox};
 use gtk::{glib, prelude::*};
 use std::{cell::Cell, rc::Rc, time::Duration};
 
-pub const PAGES: [(&str, &str, &str); 7] = [
-    ("wifi", "Wi-Fi", "network-wireless-symbolic"),
-    ("bluetooth", "Bluetooth", "bluetooth-symbolic"),
-    ("phone", "Phone", "phone-symbolic"),
-    ("sound", "Sound", "audio-volume-high-symbolic"),
-    ("display", "Display", "display-brightness-symbolic"),
+/// Wi-Fi, Bluetooth, Sound and Display are in Control Center, under the bar.
+pub const PAGES: [(&str, &str, &str); 4] = [
     (
         "appearance",
         "Appearance",
         "preferences-desktop-wallpaper-symbolic",
     ),
+    ("phone", "Phone", "phone-symbolic"),
     ("monitor", "Monitor", "power-profile-performance-symbolic"),
+    ("packages", "Packages", "system-software-install-symbolic"),
 ];
-/// Sidebar groups, by index into `PAGES`.
-const SECTIONS: [(&str, std::ops::Range<usize>); 2] = [("Connections", 0..3), ("System", 3..7)];
 
 /// The settings pages live in a regular floating window, detached from the bar.
 pub struct ControlCenter {
@@ -24,32 +20,23 @@ pub struct ControlCenter {
     pub stack: gtk::Stack,
     pub power: gtk::Button,
     navs: Vec<(&'static str, gtk::Button)>,
-    details: Vec<(&'static str, gtk::Label)>,
     status: gtk::Label,
     status_generation: Cell<u64>,
 }
-/// Sidebar entry: icon tile, title and a short trailing status.
-fn nav_button(title: &str, icon: &str) -> (gtk::Button, gtk::Label) {
+fn nav_button(title: &str, icon: &str) -> gtk::Button {
     let b = gtk::Button::new();
     b.add_css_class("nav");
-    let row = hbox(14);
+    let row = hbox(10);
     let image = gtk::Image::from_icon_name(icon);
     image.add_css_class("nav-icon");
-    image.set_pixel_size(18);
+    image.set_pixel_size(16);
     row.append(&image);
     let text = label(title, "nav-title");
     text.set_wrap(false);
-    text.set_hexpand(true);
     text.set_valign(gtk::Align::Center);
     row.append(&text);
-    let detail = label("", "nav-detail");
-    detail.set_wrap(false);
-    detail.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    detail.set_max_width_chars(11);
-    detail.set_valign(gtk::Align::Center);
-    row.append(&detail);
     b.set_child(Some(&row));
-    (b, detail)
+    b
 }
 impl ControlCenter {
     pub fn new(app: &gtk::Application) -> Rc<Self> {
@@ -64,30 +51,45 @@ impl ControlCenter {
         window.add_css_class("nexus");
         window.add_css_class("control-center");
         let root = hbox(0);
-        let sidebar = vbox(4);
+        let sidebar = vbox(2);
         sidebar.add_css_class("sidebar");
-        sidebar.set_width_request(250);
+        sidebar.set_width_request(184);
         let stack = gtk::Stack::new();
         stack.set_hexpand(true);
         stack.set_vexpand(true);
-        // Vertical carousel: pages below the current one slide up, pages above slide down.
         stack.set_hhomogeneous(true);
         stack.set_vhomogeneous(true);
-        stack.set_transition_type(gtk::StackTransitionType::SlideUpDown);
-        stack.set_transition_duration(220);
-        let mut navs = vec![];
-        let mut details = vec![];
-        for (section, pages) in SECTIONS {
-            sidebar.append(&label(section, "sidebar-section"));
-            for (id, title, icon) in &PAGES[pages] {
-                let (b, detail) = nav_button(title, icon);
-                let st = stack.clone();
-                let id: &'static str = id;
-                b.connect_clicked(move |_| st.set_visible_child_name(id));
-                sidebar.append(&b);
-                navs.push((id, b));
-                details.push((id, detail));
+        stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        stack.set_transition_duration(110);
+        let head = hbox(0);
+        head.add_css_class("sidebar-head");
+        let title = label("Settings", "sidebar-title");
+        title.set_wrap(false);
+        title.set_hexpand(true);
+        title.set_valign(gtk::Align::Center);
+        head.append(&title);
+        let close = gtk::Button::from_icon_name("window-close-symbolic");
+        close.add_css_class("control-close");
+        close.add_css_class("flat");
+        close.set_valign(gtk::Align::Center);
+        close.set_tooltip_text(Some("Close"));
+        close.update_property(&[gtk::accessible::Property::Label("Close")]);
+        let weak_window = window.downgrade();
+        close.connect_clicked(move |_| {
+            if let Some(window) = weak_window.upgrade() {
+                window.close();
             }
+        });
+        head.append(&close);
+        sidebar.append(&head);
+        let mut navs = vec![];
+        for (id, title, icon) in &PAGES {
+            let b = nav_button(title, icon);
+            let st = stack.clone();
+            let id: &'static str = id;
+            b.connect_clicked(move |_| st.set_visible_child_name(id));
+            sidebar.append(&b);
+            navs.push((id, b));
         }
         let all = navs.clone();
         stack.connect_visible_child_name_notify(move |st| {
@@ -103,11 +105,7 @@ impl ControlCenter {
         let spacer = vbox(0);
         spacer.set_vexpand(true);
         sidebar.append(&spacer);
-        let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
-        separator.set_margin_bottom(8);
-        sidebar.append(&separator);
-        let (power, _) = nav_button("Power", "system-shutdown-symbolic");
-        power.add_css_class("power-nav");
+        let power = nav_button("Power", "system-shutdown-symbolic");
         sidebar.append(&power);
         // Dragging the sidebar moves the undecorated window.
         let handle = gtk::WindowHandle::new();
@@ -115,22 +113,6 @@ impl ControlCenter {
         root.append(&handle);
         let content = vbox(0);
         content.set_hexpand(true);
-        let window_actions = hbox(0);
-        window_actions.set_halign(gtk::Align::End);
-        window_actions.set_margin_top(8);
-        window_actions.set_margin_end(8);
-        let close = gtk::Button::from_icon_name("window-close-symbolic");
-        close.add_css_class("control-close");
-        close.set_tooltip_text(Some("Close"));
-        close.update_property(&[gtk::accessible::Property::Label("Close")]);
-        let weak_window = window.downgrade();
-        close.connect_clicked(move |_| {
-            if let Some(window) = weak_window.upgrade() {
-                window.close();
-            }
-        });
-        window_actions.append(&close);
-        content.append(&window_actions);
         content.append(&stack);
         let status = label("", "status");
         status.add_css_class("error");
@@ -164,7 +146,6 @@ impl ControlCenter {
             stack,
             power,
             navs,
-            details,
             status,
             status_generation: Cell::new(0),
         })
@@ -192,13 +173,6 @@ impl ControlCenter {
         // Keyboard focus sits on the active entry so no second item looks selected.
         if let Some((_, b)) = self.navs.iter().find(|(id, _)| *id == page) {
             b.grab_focus();
-        }
-    }
-    /// Short live status next to a sidebar entry, such as the Wi-Fi network.
-    pub fn set_detail(&self, page: &str, text: &str) {
-        if let Some((_, l)) = self.details.iter().find(|(id, _)| *id == page) {
-            l.set_text(text);
-            l.set_tooltip_text((!text.is_empty()).then_some(text));
         }
     }
     pub fn report(self: &Rc<Self>, result: Result<(), String>) {

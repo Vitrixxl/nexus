@@ -14,6 +14,12 @@ pub struct Settings {
     pub wallpaper: Option<String>,
     pub wallpaper_colors: bool,
     pub accent: String,
+    pub style: String,
+    /// Opacity of the surfaces' background alone, in percent; their text and icons
+    /// stay solid. By default, what the style says.
+    pub opacity: Option<u8>,
+    /// Which of [`LOCK_STYLES`] the lock screen uses.
+    pub lock_style: String,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -21,7 +27,10 @@ impl Default for Settings {
             mode: "dark".into(),
             wallpaper: None,
             wallpaper_colors: false,
-            accent: "#91b5a4".into(),
+            accent: "#0a84ff".into(),
+            style: "blur".into(),
+            opacity: None,
+            lock_style: LOCK_STYLES[0].0.into(),
         }
     }
 }
@@ -40,10 +49,17 @@ pub fn config_dir() -> PathBuf {
     config_home().join("nexus")
 }
 pub fn load() -> Settings {
-    fs::read(config_dir().join("settings.json"))
-        .ok()
-        .and_then(|v| serde_json::from_slice(&v).ok())
-        .unwrap_or_default()
+    parse(&fs::read(config_dir().join("settings.json")).unwrap_or_default())
+}
+/// A style from another version becomes what it is shown as, or [`check`] would
+/// refuse every later save.
+fn parse(file: &[u8]) -> Settings {
+    let mut settings: Settings = serde_json::from_slice(file).unwrap_or_default();
+    settings.style = settings.style().id.into();
+    if !LOCK_STYLES.iter().any(|l| l.0 == settings.lock_style) {
+        settings.lock_style = Settings::default().lock_style;
+    }
+    settings
 }
 pub fn palette(settings: &Settings) -> (&str, &str, &str, &str) {
     palette_for(settings.dark())
@@ -51,9 +67,9 @@ pub fn palette(settings: &Settings) -> (&str, &str, &str, &str) {
 /// Background, surface, text and secondary text colours.
 fn palette_for(dark: bool) -> (&'static str, &'static str, &'static str, &'static str) {
     if dark {
-        ("#151a18", "#202724", "#edf2ee", "#9ba9a1")
+        ("#141416", "#1f1f22", "#f4f4f5", "#b4b4bb")
     } else {
-        ("#f3f4f0", "#ffffff", "#202824", "#69736e")
+        ("#f2f2f5", "#ffffff", "#1d1d1f", "#62626a")
     }
 }
 pub fn accent_for(path: &str) -> Result<String> {
@@ -82,12 +98,45 @@ pub fn accent_for(path: &str) -> Result<String> {
         .max_by_key(|(_, v)| v.0)
         .map(|(k, _)| *k)
         .unwrap_or((4, 5, 5));
-    Ok(format!(
-        "#{:02x}{:02x}{:02x}",
-        r * 24 + 64,
-        g * 24 + 64,
-        b * 24 + 64
-    ))
+    Ok(hex(vivid([r, g, b].map(|c| f64::from(c * 24 + 64) / 255.))))
+}
+/// The same hue with enough colour to carry a selection or a slider: a dominant
+/// colour off a photograph is usually much too muddy for that. A hue too grey to
+/// tell gets the system blue.
+fn vivid([r, g, b]: [f64; 3]) -> [f64; 3] {
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let chroma = max - min;
+    if chroma < 0.04 {
+        return rgb(&Settings::default().accent);
+    }
+    let hue = if max == r {
+        ((g - b) / chroma).rem_euclid(6.)
+    } else if max == g {
+        (b - r) / chroma + 2.
+    } else {
+        (r - g) / chroma + 4.
+    };
+    let mut lightness = ((max + min) / 2.).clamp(0.44, 0.56);
+    let mut saturation =
+        ((chroma / (1. - (2. * ((max + min) / 2.) - 1.).abs())) * 1.25).clamp(0.62, 0.9);
+    // Red through yellow: at these values, brown and mustard. They need all their
+    // colour and some light to read as orange or amber.
+    if (0.2..1.2).contains(&hue) {
+        lightness = lightness.max(0.54);
+        saturation = saturation.max(0.88);
+    }
+    let c = (1. - (2. * lightness - 1.).abs()) * saturation;
+    let x = c * (1. - (hue.rem_euclid(2.) - 1.).abs());
+    let m = lightness - c / 2.;
+    let (r, g, b) = match hue as u8 {
+        0 => (c, x, 0.),
+        1 => (x, c, 0.),
+        2 => (0., c, x),
+        3 => (0., x, c),
+        4 => (x, 0., c),
+        _ => (c, 0., x),
+    };
+    [r + m, g + m, b + m]
 }
 pub(crate) fn rgb(hex: &str) -> [f64; 3] {
     let hex = hex.trim_start_matches('#');
@@ -166,229 +215,665 @@ impl Palette {
         }
     }
 }
+/// The accents to choose from when the wallpaper does not provide one.
+pub const ACCENTS: [(&str, &str); 8] = [
+    ("Blue", "#0a84ff"),
+    ("Purple", "#bf5af2"),
+    ("Pink", "#ff375f"),
+    ("Red", "#ff453a"),
+    ("Orange", "#ff9f0a"),
+    ("Yellow", "#ffd60a"),
+    ("Green", "#30d158"),
+    ("Teal", "#40c8e0"),
+];
+/// The lock screen's compositions: id, name and what sets it apart.
+pub const LOCK_STYLES: [(&str, &str, &str); 3] = [
+    (
+        "panel",
+        "Side panel",
+        "A solid column with everything in one place",
+    ),
+    (
+        "clock",
+        "Large clock",
+        "Hours over minutes as large as the screen allows, the rest beside them",
+    ),
+    (
+        "bar",
+        "Bottom bar",
+        "The time above, one strip along the bottom",
+    ),
+];
+/// A material for the shell: how much of the desktop shows through what floats, and
+/// what the compositor does behind it. Windows stay solid in both: they are read.
+pub struct Style {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// Opacity of what floats, dark then light.
+    panel: (f64, f64),
+    /// `decoration.blur` for this style in Hyprland's Lua, dark then light.
+    blur: (&'static str, &'static str),
+}
+pub const STYLES: [Style; 2] = [
+    Style {
+        id: "opaque",
+        name: "Opaque",
+        panel: (1.0, 1.0),
+        // Nothing shows through: blurring behind it would be work for nothing.
+        blur: ("enabled = false", "enabled = false"),
+    },
+    Style {
+        id: "blur",
+        name: "Blur",
+        panel: (0.88, 0.97),
+        // Two passes: one leaves text behind readable as ghosts, a third is not seen
+        // through this much opacity, and each costs a draw of the whole surface on
+        // every frame under a floating layer. Vibrancy is not seen through it either.
+        // Dimmed under dark panels; under light ones that would turn them grey.
+        blur: (
+            "enabled = true, variant = 0, size = 10, passes = 2, vibrancy = 0, vibrancy_darkness = 0, contrast = 0.9, brightness = 0.85, noise = 0",
+            "enabled = true, variant = 0, size = 10, passes = 2, vibrancy = 0, vibrancy_darkness = 0, contrast = 1.0, brightness = 1.0, noise = 0",
+        ),
+    },
+];
+impl Settings {
+    pub fn opacity(&self) -> u8 {
+        let style = self.style().panel;
+        let default = if self.dark() { style.0 } else { style.1 };
+        self.opacity
+            .unwrap_or((default * 100.).round() as u8)
+            .min(100)
+    }
+    pub fn style(&self) -> &'static Style {
+        STYLES
+            .iter()
+            .find(|style| style.id == self.style)
+            // Styles from earlier versions, or none: the middle ground.
+            .unwrap_or(&STYLES[1])
+    }
+}
+/// Tells the compositor how to blur behind this style. The rest of its look is
+/// in the stylesheet; this part cannot be.
+pub fn apply_blur(s: &Settings) {
+    let blur = s.style().blur;
+    let blur = if s.dark() { blur.0 } else { blur.1 };
+    let lua = format!("hl.config({{ decoration = {{ blur = {{ {blur} }} }} }})");
+    if let Err(e) = crate::backend::hypr_socket(".socket.sock", &format!("eval {lua}")) {
+        eprintln!("Could not set the blur: {e}");
+    }
+}
+fn rgba(c: [f64; 3], a: f64) -> String {
+    let c = c.map(|v| (v.clamp(0., 1.) * 255.).round() as u8);
+    format!("rgba({}, {}, {}, {a:.3})", c[0], c[1], c[2])
+}
 pub fn css(s: &Settings) -> String {
     let (bg, surface, fg, muted) = palette(s);
     let light = s.mode == "light";
     let p = Palette::new(&s.accent, s.dark());
     // Text and icons drawn on an accent fill, and the accent used as text colour.
     let (on_accent, accent_fg) = (p.on_accent, hex(p.accent_fg));
-    let (error, danger, shadow, border) = if light {
-        ("#b3473b", "#b3473b", "rgba(0, 0, 0, 0.22)", 0.09)
+    let (error, danger, shadow) = if light {
+        ("#d70015", "#d70015", "rgba(0, 0, 0, 0.22)")
     } else {
-        ("#d7786d", "#e29990", "rgba(0, 0, 0, 0.7)", 0.05)
+        ("#ff453a", "#ff6961", "rgba(0, 0, 0, 0.55)")
     };
+    let opacity = f64::from(s.opacity()) / 100.;
+    let glass = rgba(p.bg, opacity);
+    // What separates a surface from what is behind it: never a light outline.
+    let edge = rgba([0.; 3], if light { 0.12 } else { 0.5 });
+    let surface_shadow = "0 0 0 1px @nexus_edge, 0 14px 32px -12px @nexus_shadow";
+    let surface_shadow_small = "0 0 0 1px @nexus_edge, 0 6px 14px -8px @nexus_shadow";
+    // Asks the compositor for blur behind the surface: GTK turns this into the
+    // background-effect request that Hyprland honours. Nothing to blur when opaque.
+    let backdrop = if opacity < 1. { "blur(20px)" } else { "none" };
+    // In light, what sits on a surface rises from it; in dark, it is a lighter veil.
+    let (raised, tile, checked, checked_shadow, center_muted) = if light {
+        (
+            "@nexus_surface",
+            "@nexus_surface",
+            "@nexus_surface",
+            "0 1px 2px alpha(black, 0.14)",
+            "#55555c",
+        )
+    } else {
+        (
+            "alpha(@nexus_fg, 0.045)",
+            "alpha(@nexus_fg, 0.06)",
+            "alpha(@nexus_fg, 0.16)",
+            "none",
+            "@nexus_muted",
+        )
+    };
+    // Light over a dark desktop turns grey unless it nearly covers it.
+    let lock_scrim = if light { 0.82 } else { 0.62 };
     let power_entrances = power_entrances();
+    let accent_dots: String = ACCENTS
+        .iter()
+        .enumerate()
+        .map(|(i, (_, color))| {
+            format!(".nexus button.accent-dot.accent-{i}, .nexus button.accent-dot.accent-{i}:hover {{ background: {color}; }}\n")
+        })
+        .collect();
     format!(
         r#"
 @define-color nexus_bg {bg}; @define-color nexus_surface {surface}; @define-color nexus_fg {fg}; @define-color nexus_muted {muted}; @define-color nexus_accent {accent};
 @define-color nexus_on_accent {on_accent}; @define-color nexus_accent_fg {accent_fg}; @define-color nexus_error {error}; @define-color nexus_danger {danger}; @define-color nexus_shadow {shadow};
-/* Theme switches fade instead of snapping; interactive highlights stay instant below.
-   The shell overlay is left out: its dimming would linger after the power chooser. */
-window.nexus:not(.shell-overlay), .nexus .sidebar, .nexus .card, .nexus-bar .bar-body, .panel-fillet, .shell-panel, .drawer-panel, .popup-panel, .nexus label, .nexus image, .nexus .nav-icon {{ transition: background-color 300ms ease, color 300ms ease, border-color 300ms ease; }}
-window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', 'Inter', sans-serif; font-size: 14px; }}
-.nexus .muted {{ color: @nexus_muted; }}
+@define-color nexus_glass {glass}; @define-color nexus_edge {edge};
+
+/* Radii: floating surfaces 16, what sits in them 12, controls 8. Nothing eases
+   but what says so below: the toolkit's theme animates every row and field. */
+.nexus * {{ transition: none; }}
+/* The base theme has no spinner animation of its own: spinners stood still. */
+@keyframes nexus-spin {{ to {{ -gtk-icon-transform: rotate(1turn); }} }}
+.nexus spinner:checked {{ animation: nexus-spin 0.9s linear infinite; }}
+window.nexus {{ background: @nexus_bg; color: @nexus_fg; font-family: 'Geist', 'Inter', sans-serif; font-size: 14px; font-feature-settings: "cv11"; }}
+selection {{ background: alpha(@nexus_accent, 0.42); color: @nexus_fg; }}
+.nexus .muted, .nexus .dim-label {{ color: @nexus_muted; opacity: 1; }}
 .nexus .caption {{ font-size: 12px; }}
-.nexus .title {{ font-size: 26px; font-weight: 650; letter-spacing: -0.5px; }}
-.nexus .row-title {{ font-weight: 600; color: @nexus_fg; }}
-.nexus .eyebrow {{ font-size: 10px; font-weight: 600; letter-spacing: 2px; color: @nexus_muted; }}
+.nexus .title {{ font-size: 22px; font-weight: 650; letter-spacing: -0.3px; }}
+.nexus .section-title {{ font-size: 15px; font-weight: 650; }}
+.nexus .row-title {{ font-weight: 550; color: @nexus_fg; }}
+.nexus .eyebrow {{ font-size: 13px; font-weight: 600; color: @nexus_muted; }}
 .nexus .error {{ color: @nexus_error; }}
-.nexus .banner {{ background: alpha(@nexus_error, 0.12); border-radius: 10px; padding: 10px 14px; }}
-.nexus .empty-state {{ color: @nexus_muted; padding: 36px 0; }}
+.nexus .banner {{ background: alpha(@nexus_error, 0.12); color: @nexus_fg; border-radius: 8px; padding: 8px 12px; }}
+.nexus .empty-state {{ color: @nexus_muted; padding: 28px 0; }}
 
-.nexus button {{ min-height: 0; min-width: 0; border-radius: 10px; padding: 8px 14px; background: alpha(@nexus_fg, 0.07); color: @nexus_fg; border: none; box-shadow: none; text-shadow: none; outline: none; }}
-.nexus button:hover {{ background: alpha(@nexus_fg, 0.12); }}
-.nexus button:active {{ background: alpha(@nexus_fg, 0.17); }}
+/* The material: what every floating surface is made of. */
+.shell-panel, .drawer-panel, .notification-popups .notification, .nexus .clipboard-card, .nexus .prompt, .osd-card, .dock-plate, .nexus button.power-tile {{
+  background-color: @nexus_glass;
+  box-shadow: {surface_shadow};
+  backdrop-filter: {backdrop};
+}}
+
+.nexus button {{ min-height: 0; min-width: 0; font-weight: 500; border-radius: 8px; padding: 6px 12px; background: alpha(@nexus_fg, 0.08); color: @nexus_fg; border: none; box-shadow: none; text-shadow: none; outline: none; transition: background-color 80ms ease, color 80ms ease; }}
+.nexus button:hover {{ background: alpha(@nexus_fg, 0.13); }}
+.nexus button:active {{ background: alpha(@nexus_fg, 0.18); transition-duration: 30ms; }}
 .nexus button:disabled {{ opacity: 0.45; }}
-.nexus button:focus-visible {{ outline: 2px solid alpha(@nexus_accent, 0.7); outline-offset: -2px; }}
+.nexus button:focus-visible {{ outline: 2px solid alpha(@nexus_accent, 0.8); outline-offset: 1px; }}
 .nexus button.flat {{ background: transparent; color: @nexus_muted; }}
-.nexus button.flat:hover {{ background: alpha(@nexus_fg, 0.07); color: @nexus_fg; }}
+.nexus button.flat:hover {{ background: alpha(@nexus_fg, 0.08); color: @nexus_fg; }}
+.nexus button.flat.dismiss, .nexus button.flat.dismiss:hover {{ background: transparent; padding: 4px; }}
+.nexus .wifi-password .secret {{ font-family: 'Geist Mono', monospace; font-size: 13px; }}
+.nexus .wifi-password button.copy {{ min-width: 28px; min-height: 28px; padding: 0; }}
 .nexus button.suggested-action {{ background: @nexus_accent; color: @nexus_on_accent; font-weight: 600; }}
-.nexus button.suggested-action:hover {{ background: shade(@nexus_accent, 1.08); }}
-.nexus button.destructive-action {{ background: #c4655a; color: #ffffff; font-weight: 600; }}
-.nexus button.destructive-action:hover {{ background: #d27468; }}
+.nexus button.suggested-action:hover {{ background: mix(@nexus_accent, @nexus_fg, 0.12); }}
+.nexus button.destructive-action {{ background: @nexus_error; color: #ffffff; font-weight: 600; }}
+.nexus button.destructive-action:hover {{ background: shade(@nexus_error, 1.1); }}
+.nexus button.icon {{ min-width: 32px; min-height: 32px; padding: 0; }}
 
-.control-center .sidebar {{ background: @nexus_surface; padding: 10px 12px 12px; border-right: 1px solid alpha(@nexus_fg, 0.05); }}
-.control-center .sidebar-section {{ font-size: 12px; font-weight: 600; color: @nexus_muted; padding: 18px 12px 8px; }}
-.control-center button.control-close {{ min-width: 24px; min-height: 24px; padding: 4px; border-radius: 50%; background: transparent; }}
-.control-center button.control-close:hover {{ background: alpha(@nexus_fg, 0.10); }}
-.control-center separator {{ margin: 0 8px; min-height: 1px; background: alpha(@nexus_fg, 0.07); }}
-.nexus button.nav {{ background: transparent; padding: 9px 10px; border-radius: 12px; color: alpha(@nexus_fg, 0.85); font-size: 15px; font-weight: 500; }}
-.nexus button.nav:hover {{ background: alpha(@nexus_fg, 0.05); color: @nexus_fg; }}
-.nexus button.nav:focus-visible {{ outline: none; background: alpha(@nexus_fg, 0.06); }}
-.nexus button.nav .nav-icon {{ background: alpha(@nexus_fg, 0.07); color: alpha(@nexus_fg, 0.85); border-radius: 10px; min-width: 36px; min-height: 36px; }}
-.nexus button.nav .nav-detail {{ color: @nexus_muted; font-size: 13px; font-weight: 400; }}
-.nexus button.nav.nav-active {{ background: alpha(@nexus_fg, 0.08); color: @nexus_fg; font-weight: 600; }}
-.nexus button.nav.nav-active .nav-icon {{ background: @nexus_accent; color: @nexus_on_accent; }}
-.nexus button.nav.power-nav:hover .nav-icon {{ background: alpha(@nexus_error, 0.2); color: @nexus_danger; }}
-.control-center .status {{ font-size: 12px; padding: 0 32px 16px; }}
+/* The settings window: a quiet column, then one page. */
+.control-center .sidebar {{ background: mix(@nexus_bg, @nexus_fg, 0.025); padding: 10px 8px 10px; }}
+.control-center .sidebar-head {{ padding: 2px 2px 12px 10px; }}
+.control-center .sidebar-title {{ font-size: 15px; font-weight: 650; }}
+.nexus button.control-close {{ min-width: 28px; min-height: 28px; padding: 0; }}
+.nexus button.nav {{ background: transparent; padding: 6px 10px; color: @nexus_fg; font-weight: 500; }}
+.nexus button.nav:hover {{ background: alpha(@nexus_fg, 0.06); }}
+.nexus button.nav:focus-visible {{ outline-offset: -2px; }}
+.nexus button.nav .nav-icon {{ color: @nexus_muted; }}
+.nexus button.nav.nav-active {{ background: alpha(@nexus_fg, 0.1); font-weight: 600; }}
+.nexus button.nav.nav-active .nav-icon {{ color: @nexus_fg; }}
+.control-center .status {{ font-size: 12px; padding: 0 32px 12px; }}
 
-.nexus .card {{ background: @nexus_surface; color: @nexus_fg; border: 1px solid alpha(@nexus_fg, {border}); box-shadow: none; border-radius: 14px; padding: 14px 16px; }}
-.nexus .row-icon {{ color: @nexus_muted; }}
+/* Settings come in groups: a heading, then rows sharing one surface. */
+.nexus .group-title {{ font-size: 13px; font-weight: 600; color: @nexus_muted; padding: 0 2px 6px; margin-top: 20px; }}
+.nexus button.group-action {{ padding: 2px 8px; margin-top: 16px; margin-bottom: 4px; font-size: 13px; }}
+.nexus .group {{ background: {raised}; border-radius: 12px; }}
+.nexus .row {{ padding: 8px 14px; min-height: 32px; border-bottom: 1px solid alpha(@nexus_fg, 0.06); }}
+.nexus .row:last-child {{ border-bottom: none; }}
+.nexus .card {{ background: {raised}; color: @nexus_fg; border: none; box-shadow: none; border-radius: 12px; padding: 12px 14px; }}
+.nexus .wallpaper-thumb {{ border-radius: 8px; background: alpha(@nexus_fg, 0.08); }}
+.nexus button.lock-choice {{ padding: 8px 14px; border-radius: 0; background: transparent; border-bottom: 1px solid alpha(@nexus_fg, 0.06); }}
+.nexus button.lock-choice:last-child {{ border-bottom: none; }}
+.nexus button.lock-choice:hover {{ background: alpha(@nexus_fg, 0.05); }}
+.nexus button.lock-choice:focus-visible {{ outline-offset: -2px; }}
+.nexus button.lock-choice .lock-tick {{ opacity: 0; color: @nexus_accent_fg; }}
+.nexus button.lock-choice:checked .lock-tick {{ opacity: 1; }}
+.nexus .lock-name {{ font-weight: 550; }}
 .nexus button.stream-mute {{ padding: 6px; }}
 .nexus button.stream-mute:checked {{ background: alpha(@nexus_error, 0.16); color: @nexus_danger; }}
-.nexus .list-row.active .row-icon {{ color: @nexus_accent_fg; }}
-.nexus .segmented {{ background: alpha(@nexus_fg, 0.07); border-radius: 10px; padding: 3px; }}
-.nexus .segmented button {{ background: transparent; padding: 6px 16px; border-radius: 8px; color: @nexus_muted; }}
+.nexus .segmented {{ background: alpha(@nexus_fg, 0.08); border-radius: 8px; padding: 2px; }}
+.nexus .segmented button {{ background: transparent; padding: 4px 12px; border-radius: 6px; color: @nexus_muted; font-size: 13px; }}
 .nexus .segmented button:hover {{ color: @nexus_fg; }}
-.nexus .segmented button:checked {{ background: @nexus_accent; color: @nexus_on_accent; font-weight: 600; }}
-.nexus .wallpaper-frame {{ border-radius: 10px; background: alpha(@nexus_fg, 0.05); }}
+.nexus .segmented button:checked {{ background: {checked}; box-shadow: {checked_shadow}; color: @nexus_fg; font-weight: 600; }}
 
-.nexus switch {{ background: alpha(@nexus_fg, 0.16); border: none; border-radius: 999px; padding: 3px; box-shadow: none; outline: none; }}
+/* Appearance: the accents. */
+.nexus button.accent-dot {{ min-width: 18px; min-height: 18px; padding: 0; border-radius: 999px; }}
+.nexus button.accent-dot.selected {{ box-shadow: 0 0 0 2px @nexus_bg, 0 0 0 4px @nexus_fg; }}
+
+{accent_dots}
+.nexus switch {{ background: alpha(@nexus_fg, 0.2); border: none; border-radius: 999px; padding: 2px; box-shadow: none; outline: none; transition: background-color 120ms ease; }}
 .nexus switch:checked {{ background: @nexus_accent; }}
 .nexus switch image {{ color: transparent; }}
-.nexus switch > slider {{ background: #ffffff; border: none; border-radius: 999px; min-width: 18px; min-height: 18px; margin: 0; box-shadow: 0 1px 2px alpha(black, 0.3); }}
+.nexus switch > slider {{ background: #ffffff; border: none; border-radius: 999px; min-width: 20px; min-height: 20px; margin: 0; box-shadow: 0 1px 2px alpha(black, 0.3); }}
 .nexus switch:disabled {{ opacity: 0.45; }}
+.nexus switch:focus-visible {{ outline: 2px solid alpha(@nexus_accent, 0.8); outline-offset: 1px; }}
 
 .nexus scale {{ padding: 8px 0; }}
-.nexus scale > trough {{ background: alpha(@nexus_fg, 0.12); border: none; border-radius: 999px; min-height: 6px; outline: none; }}
-.nexus scale > trough > highlight {{ background: @nexus_accent; border: none; border-radius: 999px; }}
-.nexus scale > trough > slider {{ background: #ffffff; border: none; border-radius: 999px; min-width: 18px; min-height: 18px; margin: -6px; box-shadow: 0 1px 3px alpha(black, 0.35); }}
-.nexus scale > value {{ color: @nexus_muted; font-size: 12px; min-width: 40px; margin-left: 12px; font-feature-settings: "tnum"; }}
+.nexus scale > trough {{ background: alpha(@nexus_fg, 0.14); border: none; border-radius: 999px; min-height: 6px; outline: none; }}
+.nexus scale > trough > highlight {{ background: @nexus_accent; border: none; border-radius: 999px; margin: 0; min-height: 0; min-width: 0; }}
+.nexus scale > trough > slider {{ background: #ffffff; border: 1px solid alpha(@nexus_fg, 0.5); border-radius: 999px; min-width: 16px; min-height: 16px; margin: -6px; box-shadow: 0 1px 3px alpha(black, 0.4); }}
+.nexus scale > value {{ color: alpha(@nexus_fg, 0.8); opacity: 1; font-size: 12px; min-width: 40px; margin-left: 10px; font-feature-settings: "tnum"; }}
 .nexus scale:disabled {{ opacity: 0.45; }}
 
-.nexus dropdown > button {{ background: alpha(@nexus_fg, 0.06); padding: 8px 12px; }}
-.nexus popover > contents {{ background: @nexus_surface; color: @nexus_fg; border-radius: 12px; padding: 6px; border: 1px solid alpha(@nexus_fg, 0.08); box-shadow: 0 8px 24px alpha(black, 0.35); }}
-.nexus popover > arrow {{ background: @nexus_surface; border: 1px solid alpha(@nexus_fg, 0.08); }}
+.nexus dropdown > button {{ background: alpha(@nexus_fg, 0.07); padding: 6px 10px; }}
+.nexus popover > contents {{ background-color: mix(@nexus_bg, @nexus_surface, 0.5); color: @nexus_fg; border-radius: 12px; padding: 4px; box-shadow: 0 0 0 1px @nexus_edge, 0 10px 24px -8px @nexus_shadow; }}
+.nexus popover > arrow {{ background: transparent; border: none; }}
 .nexus popover listview {{ background: transparent; }}
-.nexus popover listview > row {{ border-radius: 8px; padding: 8px 10px; }}
-.nexus popover listview > row:hover {{ background: alpha(@nexus_fg, 0.07); }}
-.nexus popover listview > row:selected {{ background: alpha(@nexus_accent, 0.18); color: @nexus_fg; }}
+.nexus popover listview > row {{ border-radius: 8px; padding: 6px 10px; }}
+.nexus popover listview > row:hover {{ background: alpha(@nexus_fg, 0.08); }}
+.nexus popover listview > row:selected {{ background: alpha(@nexus_fg, 0.13); color: @nexus_fg; }}
+tooltip.background {{ background: mix(@nexus_bg, @nexus_surface, 0.5); color: @nexus_fg; border-radius: 8px; padding: 0; box-shadow: 0 0 0 1px @nexus_edge; }}
+tooltip > box {{ padding: 4px 8px; }}
 
-.nexus entry {{ background: alpha(@nexus_fg, 0.07); color: @nexus_fg; border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; box-shadow: none; outline: none; }}
-.nexus entry:focus-within {{ border-color: alpha(@nexus_accent, 0.8); }}
+.nexus entry {{ background: alpha(@nexus_fg, 0.07); color: @nexus_fg; caret-color: @nexus_accent; border: none; border-radius: 8px; padding: 6px 10px; box-shadow: none; outline: none; }}
+.nexus entry:focus-within {{ outline: 2px solid alpha(@nexus_accent, 0.8); outline-offset: -2px; }}
 .nexus scrollbar {{ background: transparent; border: none; }}
-.nexus scrollbar slider {{ background: alpha(@nexus_fg, 0.2); border: none; border-radius: 999px; min-width: 4px; min-height: 24px; }}
-.nexus separator {{ background: alpha(@nexus_muted, 0.15); }}
+.nexus scrollbar slider {{ background: alpha(@nexus_fg, 0.18); border: none; border-radius: 999px; min-width: 5px; min-height: 28px; }}
+.nexus separator {{ background: alpha(@nexus_fg, 0.1); }}
 
-window.shell-overlay {{ background: transparent; }}
-.panel-fillet {{ color: @nexus_bg; }}
-window.power-overlay {{ background: alpha(#080d0a, 0.72); transition: background-color 220ms ease; }}
+window.shell-overlay, window.clipboard-layer, window.prompt-window, window.osd, window.drawer, window.notification-popups, window.screenshot {{ background: transparent; }}
+.nexus .clipboard-card {{ color: @nexus_fg; border-radius: 16px; padding: 12px; }}
+.nexus .clipboard-list {{ background: transparent; }}
+.nexus .clipboard-list row {{ border-radius: 8px; padding: 6px 8px; margin: 1px 0; }}
+.nexus .clipboard-list row:hover, .nexus .clipboard-list row:focus {{ background: alpha(@nexus_fg, 0.08); }}
+.nexus .clipboard-list row:selected {{ background: alpha(@nexus_fg, 0.13); color: @nexus_fg; }}
+.nexus .clipboard-row image.accent {{ color: @nexus_accent_fg; }}
+window.power-overlay {{ background: alpha(#05060a, 0.5); transition: background-color 100ms ease; }}
 window.power-overlay.leaving {{ background: transparent; }}
-window.power-overlay.leaving .power-page > .card, window.power-overlay.leaving .power-page > label {{ opacity: 0; transition: opacity 160ms ease; }}
-.shell-panel {{ background: @nexus_bg; border-radius: 0 0 22px 22px; border: none; box-shadow: 0 24px 44px -12px @nexus_shadow, 0 8px 16px -8px alpha(@nexus_shadow, 0.65); }}
-.power-overlay .shell-panel {{ background: transparent; border: none; box-shadow: none; }}
+.click-away-seed {{ min-width: 1px; min-height: 1px; background: rgba(0, 0, 0, 0.004); }}
+.shell-panel {{ border-radius: 16px; }}
+.power-overlay .shell-panel {{ background: transparent; background-image: none; box-shadow: none; backdrop-filter: none; }}
 .nexus .power-page {{ padding: 24px; }}
-.nexus button.power-tile {{ min-width: 168px; padding: 32px 18px 26px; font-size: 15px; font-weight: 500; border-radius: 22px; background: @nexus_bg; border: 1px solid alpha(@nexus_fg, 0.06); box-shadow: 0 24px 48px -12px @nexus_shadow; }}
-.nexus button.power-tile:hover {{ background: mix(@nexus_bg, @nexus_fg, 0.06); }}
-.nexus button.power-tile.selected {{ background: alpha(@nexus_accent, 0.2); }}
+.nexus .power-page .card {{ background: @nexus_bg; }}
+.nexus button.power-tile {{ min-width: 112px; padding: 16px 12px 12px; font-size: 14px; font-weight: 500; border-radius: 16px; }}
+.nexus button.power-tile:hover {{ background-color: mix(@nexus_glass, @nexus_fg, 0.12); }}
+.nexus button.power-tile.selected {{ background-color: mix(@nexus_glass, @nexus_fg, 0.2); }}
 .nexus button.power-tile.danger {{ color: @nexus_danger; }}
-.nexus button.power-tile.danger.selected {{ background: mix(@nexus_bg, @nexus_error, 0.18); }}
+.nexus button.power-tile.danger.selected {{ background-color: @nexus_error; color: #ffffff; }}
 {power_entrances}
-window.screenshot {{ background: transparent; }}
 /* The selection lets the screen through; its spread shadow dims everything else. */
-.screenshot-selection {{ border: 2px solid @nexus_accent; border-radius: 0; box-shadow: 0 0 0 10000px alpha(@nexus_bg, 0.55); }}
-window.prompt-window {{ background: transparent; }}
-.nexus .prompt {{ background: @nexus_bg; border-radius: 18px; padding: 24px; border: 1px solid alpha(@nexus_fg, 0.1); }}
-.nexus .prompt .title {{ font-size: 20px; }}
+.screenshot-selection {{ border: 2px solid @nexus_accent; border-radius: 0; box-shadow: 0 0 0 10000px alpha(#05060a, 0.48); }}
+.nexus .prompt {{ border-radius: 16px; padding: 20px; }}
+.nexus .prompt .title {{ font-size: 18px; }}
 
-window.notification-popups {{ background: transparent; }}
-.notification-popups .popup-panel {{ background: @nexus_bg; border-radius: 22px 0 0 0; }}
-.notification-popups.left .popup-panel {{ border-radius: 0 22px 0 0; }}
-.notification-popups .notification {{ padding: 14px 18px 16px; }}
-.notification-popups revealer + revealer > .notification {{ border-top: 1px solid alpha(@nexus_fg, 0.06); }}
-.notification-popups .notification.critical {{ background: alpha(@nexus_error, 0.08); }}
-window.drawer {{ background: transparent; }}
-.drawer-dim {{ background: alpha(#05070a, 0.45); border-radius: 22px; }}
-.drawer-panel {{ background: @nexus_bg; border-radius: 22px 0 0 0; }}
-.notification-center {{ padding: 22px 18px 14px; }}
-.notification-center .center-title {{ font-size: 18px; font-weight: 650; }}
-.notification-center .notification {{ background: @nexus_surface; border: 1px solid alpha(@nexus_fg, {border}); border-radius: 14px; padding: 12px 14px 14px; }}
-.notification-center .empty-state {{ padding: 28px 0; }}
-.nexus .notification.critical {{ border-color: alpha(@nexus_error, 0.55); }}
+/* Notifications: separate cards. */
+.notification-popups .popup-panel {{ padding: 2px 0; }}
+.notification-popups .notification {{ padding: 10px 12px 12px; margin: 4px 8px 10px 8px; border-radius: 16px; box-shadow: {surface_shadow_small}; }}
+.drawer-panel {{ border-radius: 16px; }}
+.notification-center {{ padding: 12px; }}
+.notification-center .center-title {{ font-size: 15px; font-weight: 650; }}
+.notification-center .notification {{ background: {tile}; border-radius: 12px; padding: 8px 10px 10px; }}
+.notification-center .empty-state {{ padding: 18px 0 14px; }}
+.notification-center .muted, .notification-center .dim-label, .notification-center .notification .app-name {{ color: {center_muted}; }}
+.notification-center .center-calendar {{ background: {raised}; border-radius: 12px; padding: 6px 6px 6px; }}
+.notification-center .calendar-head {{ padding: 0 2px 2px 8px; }}
+.notification-center .calendar-month {{ font-size: 13px; font-weight: 600; }}
+.nexus button.calendar-step {{ min-width: 28px; min-height: 28px; padding: 0; background: transparent; color: {center_muted}; }}
+.nexus button.calendar-step:hover {{ background: alpha(@nexus_fg, 0.08); color: @nexus_fg; }}
+.notification-center calendar {{ background: transparent; color: @nexus_fg; border: none; padding: 0; font-size: 12px; font-feature-settings: "tnum"; }}
+.notification-center calendar > grid {{ padding: 0; }}
+.notification-center calendar > grid > label {{ min-width: 24px; min-height: 24px; margin: 0; padding: 0; border-radius: 999px; }}
+.notification-center calendar > grid > label:selected {{ background: none; color: @nexus_fg; }}
+.notification-center calendar > grid > label.day-name {{ color: {center_muted}; font-size: 11px; font-weight: 600; }}
+.notification-center calendar > grid > label.week-number {{ color: transparent; }}
+.notification-center calendar > grid > label.other-month {{ color: alpha(@nexus_fg, 0.45); }}
+.notification-center calendar > grid > label.today, .notification-center calendar > grid > label.today:selected {{ background: radial-gradient(circle closest-side, @nexus_accent 92%, transparent 100%); color: @nexus_on_accent; font-weight: 600; }}
 .nexus .notification .app-name {{ font-size: 12px; font-weight: 600; color: @nexus_muted; }}
 .nexus .notification .summary {{ font-weight: 600; }}
-.nexus .notification .body {{ color: alpha(@nexus_fg, 0.8); }}
+.nexus .notification .body {{ color: alpha(@nexus_fg, 0.84); }}
+.nexus .notification.critical .summary, .nexus .notification.critical .app-name {{ color: @nexus_danger; }}
+.notification-popups .notification.critical {{ background-color: mix(@nexus_glass, @nexus_error, 0.1); }}
+.notification-center .notification.critical {{ background-color: alpha(@nexus_error, 0.1); }}
 .nexus .notification label link {{ color: @nexus_accent_fg; }}
-.nexus .notification-image {{ border-radius: 10px; }}
-.nexus button.notification-close {{ padding: 3px; border-radius: 999px; }}
-.nexus .notification .actions button {{ padding: 6px 12px; font-size: 13px; }}
-.nexus .notification progressbar > trough {{ background: alpha(@nexus_fg, 0.12); border: none; border-radius: 999px; min-height: 6px; }}
+.nexus .notification-image {{ border-radius: 8px; }}
+.nexus button.notification-close {{ min-width: 24px; min-height: 24px; padding: 0; border-radius: 8px; background: transparent; color: @nexus_muted; }}
+.nexus button.notification-close:hover {{ background: alpha(@nexus_fg, 0.1); color: @nexus_fg; }}
+.nexus .notification .actions button {{ padding: 5px 10px; font-size: 13px; }}
+.nexus .notification progressbar > trough {{ background: alpha(@nexus_fg, 0.14); border: none; border-radius: 999px; min-height: 6px; }}
 .nexus .notification progressbar > trough > progress {{ background: @nexus_accent; border: none; border-radius: 999px; min-width: 0; min-height: 6px; margin: 0; }}
-window.lock-screen {{ background: @nexus_bg; }}
-.lock-screen .lock-shot {{ animation: lock-zoom 260ms cubic-bezier(0.22, 1, 0.36, 1) both; }}
-.lock-screen .lock-shot.leaving {{ animation: lock-unzoom 220ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
-.lock-screen .lock-blurred {{ animation: lock-fade-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both; }}
-.lock-screen .lock-shot.leaving .lock-blurred {{ animation: lock-fade-out 220ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
-.lock-screen .lock-card {{ background: alpha(@nexus_surface, 0.94); color: @nexus_fg; border: 1px solid alpha(@nexus_fg, 0.1); border-radius: 26px; padding: 28px 36px 22px; min-width: 340px; box-shadow: 0 30px 60px -20px @nexus_shadow; animation: card-rise 320ms cubic-bezier(0.16, 1, 0.3, 1) both; }}
-.lock-screen .lock-card.leaving {{ animation: card-drop 220ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
-.lock-screen .lock-clock {{ font-size: 72px; font-weight: 900; letter-spacing: -2px; font-feature-settings: "tnum"; margin-bottom: 18px; }}
-.lock-screen .lock-password {{ background: alpha(@nexus_fg, 0.06); border: 1px solid alpha(@nexus_fg, 0.1); border-radius: 14px; padding: 10px 14px; min-height: 22px; box-shadow: none; outline: none; transition: border-color 200ms ease; }}
-.lock-screen .lock-password:focus-within {{ border-color: alpha(@nexus_accent, 0.85); }}
-.lock-screen .lock-password.error {{ border-color: alpha(@nexus_error, 0.8); }}
-.lock-screen .lock-password.shake-a {{ animation: field-shake-a 420ms ease-out; }}
-.lock-screen .lock-password.shake-b {{ animation: field-shake-b 420ms ease-out; }}
-.lock-screen .lock-card.checking .lock-password {{ animation: field-pulse 900ms ease-in-out infinite; }}
-.lock-screen .lock-message {{ font-size: 13px; color: @nexus_muted; min-height: 18px; margin-top: 8px; }}
-.lock-screen .lock-message.error {{ color: @nexus_error; font-weight: 600; }}
-@keyframes lock-zoom {{ from {{ transform: scale(1); }} to {{ transform: scale(1.04); }} }}
-@keyframes lock-unzoom {{ from {{ transform: scale(1.04); }} to {{ transform: scale(1); }} }}
+
+/* The lock: the blurred desktop under a scrim of the theme's own background,
+   strong enough for text on a pure white or black capture to read. What needs
+   more contrast than that (fields, messages) is drawn solid. */
+window.lock-screen {{ background: #000000; color: @nexus_fg; }}
+.lock-screen .lock-shot {{ animation: lock-zoom 200ms cubic-bezier(0.22, 1, 0.36, 1) both; }}
+.lock-screen .lock-shot.leaving {{ animation: lock-unzoom 140ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
+.lock-screen .lock-blurred {{ animation: lock-fade-in 140ms cubic-bezier(0.22, 1, 0.36, 1) both; }}
+.lock-screen .lock-shot.leaving .lock-blurred {{ animation: lock-fade-out 140ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
+.lock-screen .lock-scrim {{ background: alpha(@nexus_bg, {lock_scrim}); }}
+window.lock-screen.panel .lock-scrim {{ background: alpha(@nexus_bg, 0.2); }}
+.lock-screen .lock-ui {{ animation: lock-fade-in 140ms cubic-bezier(0.2, 0.9, 0.25, 1) both; }}
+.lock-screen .lock-ui.leaving {{ animation: lock-fade-out 120ms cubic-bezier(0.7, 0, 0.84, 0) both; }}
+.lock-screen .lock-time {{ font-feature-settings: "tnum"; }}
+.lock-screen .lock-date {{ font-weight: 450; }}
+.lock-screen .lock-name {{ font-weight: 600; font-size: 16px; }}
+.lock-screen .lock-identity {{ margin-bottom: 16px; }}
+.lock-screen .lock-avatar {{ border-radius: 999px; background: @nexus_accent; color: @nexus_on_accent; font-weight: 600; font-size: 17px; }}
+.lock-screen .lock-field {{ border-radius: 12px; padding: 5px; background: @nexus_surface; color: @nexus_fg; box-shadow: 0 1px 3px alpha(black, 0.18); transition: box-shadow 80ms ease; }}
+.lock-screen .lock-field:focus-within {{ box-shadow: 0 0 0 2px @nexus_accent; }}
+.lock-screen .lock-field.error, .lock-screen .lock-field.error:focus-within {{ box-shadow: 0 0 0 2px @nexus_error; }}
+.lock-screen .lock-field.shake-a {{ animation: field-shake-a 300ms ease-out; }}
+.lock-screen .lock-field.shake-b {{ animation: field-shake-b 300ms ease-out; }}
+.lock-screen entry.lock-password, .lock-screen entry.lock-password:focus-within {{ background: transparent; border: none; box-shadow: none; outline: none; min-height: 38px; color: @nexus_fg; caret-color: @nexus_accent; padding: 0 10px; font-size: 16px; }}
+.lock-screen .lock-password image {{ color: @nexus_muted; }}
+.lock-screen button.lock-submit {{ min-width: 38px; min-height: 38px; padding: 0; border-radius: 8px; background: @nexus_accent; color: @nexus_on_accent; }}
+.lock-screen button.lock-submit:hover {{ background: mix(@nexus_accent, @nexus_fg, 0.12); }}
+.lock-screen button.lock-submit:disabled {{ background: alpha(@nexus_fg, 0.08); color: @nexus_muted; }}
+.lock-screen .lock-notes {{ margin-top: 8px; min-height: 34px; }}
+.lock-screen .lock-message, .lock-screen .lock-caps {{ font-size: 13px; font-weight: 550; color: @nexus_fg; }}
+.lock-screen .poster-side .lock-message, .lock-screen .poster-side .lock-caps {{ padding: 6px 10px; border-radius: 8px; background: @nexus_bg; }}
+.lock-screen .lock-preview {{ margin-top: 16px; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 550; background: @nexus_bg; color: @nexus_fg; }}
+.lock-screen .lock-message.error {{ color: @nexus_error; }}
+.lock-screen .lock-message.warning {{ color: @nexus_error; }}
+.lock-screen .lock-status {{ font-size: 13px; font-weight: 500; font-feature-settings: "tnum"; }}
+.lock-screen button.lock-power {{ min-height: 38px; padding: 0 12px; font-size: 13px; font-weight: 500; background: alpha(@nexus_fg, 0.1); color: @nexus_fg; }}
+.lock-screen button.lock-power:hover {{ background: alpha(@nexus_fg, 0.18); }}
+.lock-screen button.lock-power:active {{ background: alpha(@nexus_fg, 0.24); }}
+.lock-screen button:focus-visible {{ box-shadow: 0 0 0 2px @nexus_accent; }}
+.lock-screen .lock-question {{ font-size: 13px; font-weight: 550; }}
+.lock-screen button.lock-answer {{ min-height: 38px; padding: 0 14px; font-size: 13px; font-weight: 500; background: alpha(@nexus_fg, 0.1); color: @nexus_fg; }}
+.lock-screen button.lock-answer:hover {{ background: alpha(@nexus_fg, 0.18); }}
+.lock-screen button.lock-answer.destructive-action {{ background: @nexus_error; color: #ffffff; }}
+.lock-screen button.lock-answer.destructive-action:hover {{ background: mix(@nexus_error, #000000, 0.12); }}
+/* Side panel: one solid column. */
+.lock-screen .lock-column {{ min-width: 356px; padding: 44px 36px 32px; background: @nexus_bg; box-shadow: 12px 0 40px -16px @nexus_shadow; }}
+.lock-screen .lock-column .lock-time {{ font-size: 88px; font-weight: 300; letter-spacing: -3px; }}
+.lock-screen .lock-column .lock-date {{ font-size: 17px; color: @nexus_muted; margin-top: 2px; }}
+.lock-screen .lock-column .lock-avatar {{ font-size: 24px; }}
+.lock-screen .lock-column .lock-name {{ font-size: 19px; }}
+.lock-screen .lock-column .lock-field {{ background: mix(@nexus_bg, @nexus_fg, 0.07); }}
+.lock-screen .lock-column .lock-status {{ color: @nexus_muted; margin-bottom: 14px; }}
+.lock-screen .lock-column .lock-confirm-row {{ margin-top: 0; }}
+/* Large clock: hours over minutes, sized from the monitor in code. */
+.lock-screen .lock-poster {{ margin: 44px 56px; }}
+.lock-screen .poster-time {{ line-height: 0.62; font-weight: 300; }}
+.lock-screen .lock-poster .lock-date {{ font-size: 30px; margin-top: 18px; }}
+.lock-screen .poster-side {{ min-width: 344px; }}
+.lock-screen .poster-side .lock-power-row, .lock-screen .poster-side .lock-confirm-row {{ margin-top: 10px; }}
+.lock-screen.compact .lock-poster {{ margin: 28px 32px; }}
+.lock-screen.compact .lock-poster .lock-date {{ font-size: 20px; margin-top: 8px; }}
+.lock-screen.compact .poster-side {{ min-width: 300px; }}
+/* Bottom bar: the time on the backdrop, the rest on one strip. */
+.lock-screen .bar-above {{ margin: 0 40px 28px; }}
+.lock-screen .bar-above .lock-time {{ font-size: 136px; font-weight: 300; letter-spacing: -5px; }}
+.lock-screen .bar-above .lock-date {{ font-size: 24px; margin-left: 4px; }}
+.lock-screen .lock-strip {{ padding: 16px 40px 8px; background: @nexus_bg; box-shadow: 0 -12px 40px -16px @nexus_shadow; }}
+.lock-screen .lock-strip .lock-identity {{ margin: 2px 20px 0 0; }}
+.lock-screen .lock-strip .lock-field {{ min-width: 400px; background: mix(@nexus_bg, @nexus_fg, 0.07); }}
+.lock-screen .lock-strip .lock-confirm-row {{ margin-left: 8px; }}
+.lock-screen .lock-strip .lock-question {{ margin-right: 16px; }}
+.lock-screen .lock-strip .lock-status {{ color: @nexus_muted; margin-left: 16px; }}
+.lock-screen .lock-strip .lock-notes {{ margin-top: 6px; min-height: 20px; }}
+.lock-screen.compact .bar-above {{ margin: 0 24px 16px; }}
+.lock-screen.compact .bar-above .lock-time {{ font-size: 96px; letter-spacing: -3px; }}
+.lock-screen.compact .lock-strip {{ padding: 12px 24px 6px; }}
+.lock-screen.compact .lock-strip .lock-field {{ min-width: 300px; }}
+@keyframes lock-zoom {{ from {{ transform: scale(1); }} to {{ transform: scale(1.05); }} }}
+@keyframes lock-unzoom {{ from {{ transform: scale(1.05); }} to {{ transform: scale(1); }} }}
 @keyframes lock-fade-in {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
 @keyframes lock-fade-out {{ from {{ opacity: 1; }} to {{ opacity: 0; }} }}
-@keyframes card-rise {{ from {{ opacity: 0; transform: translateY(700px); }} to {{ opacity: 1; transform: none; }} }}
-@keyframes card-drop {{ from {{ opacity: 1; transform: none; }} to {{ opacity: 0; transform: translateY(700px); }} }}
-@keyframes field-pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} }}
-@keyframes field-shake-a {{ 0%, 100% {{ transform: none; }} 15% {{ transform: translateX(-14px); }} 35% {{ transform: translateX(11px); }} 55% {{ transform: translateX(-7px); }} 75% {{ transform: translateX(4px); }} }}
-@keyframes field-shake-b {{ 0%, 100% {{ transform: none; }} 15% {{ transform: translateX(-14px); }} 35% {{ transform: translateX(11px); }} 55% {{ transform: translateX(-7px); }} 75% {{ transform: translateX(4px); }} }}
+@keyframes field-shake-a {{ 0%, 100% {{ transform: none; }} 20% {{ transform: translateX(-10px); }} 45% {{ transform: translateX(8px); }} 70% {{ transform: translateX(-4px); }} }}
+@keyframes field-shake-b {{ 0%, 100% {{ transform: none; }} 20% {{ transform: translateX(-10px); }} 45% {{ transform: translateX(8px); }} 70% {{ transform: translateX(-4px); }} }}
 
-window.nexus.nexus-bar, window.nexus.nexus-frame {{ background: transparent; }}
-.nexus-bar .bar-body {{ background: @nexus_bg; }}
-.nexus-bar .bar-content {{ padding: 4px 14px; min-height: 26px; }}
-.nexus-bar button {{ padding: 0 10px; min-height: 26px; margin: 0 1px; font-size: 12px; background: transparent; border-radius: 8px; }}
-.nexus-bar button:hover {{ background: alpha(@nexus_fg, 0.08); }}
-.nexus-bar button.bar-static:hover {{ background: transparent; }}
-.nexus-bar .bar-brand {{ color: @nexus_accent_fg; font-size: 14px; font-weight: 700; padding: 0 12px; }}
-.nexus-bar .bar-search {{ background: alpha(@nexus_fg, 0.06); padding: 0 16px; border-radius: 8px; }}
-.nexus-bar .bar-search:hover {{ background: alpha(@nexus_fg, 0.1); }}
-.nexus-bar .bar-phone {{ background: alpha(@nexus_fg, 0.06); box-shadow: inset 0 0 0 1px alpha(@nexus_fg, 0.1); margin: 0 6px; }}
-.nexus-bar .bar-phone:hover {{ background: alpha(@nexus_fg, 0.1); }}
-.nexus-bar .bar-hint {{ color: @nexus_muted; font-size: 10px; }}
-.nexus-bar .bar-clock {{ font-size: 12px; }}
-.nexus-bar .bar-power {{ color: @nexus_accent_fg; padding: 0 12px; }}
-.nexus-bar button.bar-recording, .nexus-bar button.bar-recording label {{ color: @nexus_danger; }}
-.nexus-bar button.bar-recording {{ background: alpha(@nexus_error, 0.16); }}
-.nexus-bar .workspace {{ color: @nexus_muted; padding: 0; min-width: 26px; }}
-.nexus-bar .workspace.active {{ background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; font-weight: 700; }}
-.monitor-page {{ padding: 18px; }}
-.monitor .monitor-value {{ font-size: 20px; font-weight: 650; font-feature-settings: "tnum"; }}
+/* The menu bar: along the top of the screen rather than a slab floating on it. */
+window.nexus.nexus-bar {{ background: transparent; }}
+.nexus-bar .bar-body {{ background: transparent; min-height: 32px; }}
+.nexus-bar .bar-content {{ padding: 0 6px; background-color: @nexus_glass; backdrop-filter: {backdrop}; box-shadow: inset 0 -1px 0 @nexus_edge; }}
+.nexus-bar .bar-island {{ min-height: 32px; }}
+.nexus-bar button {{ padding: 0 8px; min-height: 24px; min-width: 16px; margin: 0; font-size: 13px; background: transparent; border-radius: 8px; }}
+.nexus-bar .bar-island > button, .nexus-bar .bar-island > box > button {{ margin-top: 4px; margin-bottom: 4px; }}
+.nexus-bar button:hover {{ background: alpha(@nexus_fg, 0.12); }}
+.nexus-bar button:active {{ background: alpha(@nexus_fg, 0.18); }}
+.nexus-bar .bar-brand {{ color: @nexus_fg; }}
+.nexus-bar .bar-app {{ font-weight: 650; font-size: 13px; margin: 0 10px 0 4px; }}
+.nexus-bar button.bar-phone.away image {{ opacity: 0.45; }}
+.nexus-bar button.bar-phone.low label {{ color: @nexus_danger; }}
+.nexus-bar .bar-value {{ font-size: 12px; font-weight: 500; font-feature-settings: "tnum"; }}
+.nexus-bar .bar-clock {{ font-size: 13px; font-weight: 550; font-feature-settings: "tnum"; }}
+.nexus-bar button.error {{ color: @nexus_danger; }}
+.nexus-bar button.bar-recording, .nexus-bar button.bar-recording label {{ color: #ffffff; }}
+.nexus-bar button.bar-recording {{ background: @nexus_error; }}
+.nexus-bar button.workspace {{ color: @nexus_muted; padding: 0; margin: 0; min-width: 26px; min-height: 24px; font-size: 12px; font-weight: 600; font-feature-settings: "tnum"; background: transparent; }}
+.nexus-bar button.workspace:hover {{ color: @nexus_fg; background: transparent; }}
+.nexus-bar button.workspace.active {{ color: @nexus_fg; }}
+.nexus-bar .workspace-pill {{ background: alpha(@nexus_fg, 0.14); border-radius: 8px; }}
+
+/* The dock. While it is down the window has nothing to draw, and a surface that
+   draws nothing is never mapped: this much is invisible but counts. */
+window.dock {{ background: rgba(0, 0, 0, 0.005); }}
+.dock-plate {{ border-radius: 16px; }}
+.dock button.dock-tile {{ background: transparent; padding: 0; margin: 0; border-radius: 12px; transition: none; }}
+.dock button.dock-tile:hover, .dock button.dock-tile:active {{ background: transparent; }}
+.dock button.dock-tile:focus-visible {{ outline: none; }}
+.dock .dock-letter {{ background: mix(@nexus_bg, @nexus_fg, 0.22); color: @nexus_fg; border-radius: 14px; font-size: 26px; font-weight: 600; min-width: 50px; min-height: 50px; }}
+.dock .dock-dot {{ background: alpha(@nexus_fg, 0.5); border-radius: 999px; min-width: 4px; min-height: 4px; }}
+.dock .dock-dot.focused {{ background: @nexus_fg; }}
+.dock .dock-divider {{ background: alpha(@nexus_fg, 0.2); min-width: 1px; }}
+
+/* Volume and brightness as they change. */
+.osd-card {{ border-radius: 16px; padding: 10px 14px; color: @nexus_fg; }}
+.osd-card progressbar > trough {{ background: alpha(@nexus_fg, 0.18); border: none; border-radius: 999px; min-height: 6px; }}
+.osd-card progressbar > trough > progress {{ background: @nexus_fg; border: none; border-radius: 999px; min-height: 6px; min-width: 0; margin: 0; }}
+.osd-card .osd-value {{ font-size: 12px; font-weight: 600; min-width: 28px; font-feature-settings: "tnum"; }}
+
+/* The system menu and Control Center, under the bar. */
+.system-menu {{ padding: 6px; }}
+.system-menu button {{ background: transparent; padding: 7px 10px; }}
+.system-menu button:hover {{ background: alpha(@nexus_fg, 0.1); }}
+.system-menu separator {{ margin: 5px 8px; }}
+.quick-panel {{ padding: 10px; }}
+.quick-head {{ padding: 0 2px 2px 0; min-height: 30px; }}
+.quick-tile {{ background: {tile}; border-radius: 12px; padding: 7px; }}
+.nexus button.quick-toggle {{ min-width: 34px; min-height: 34px; padding: 0; border-radius: 999px; background: alpha(@nexus_fg, 0.1); color: @nexus_fg; }}
+.nexus button.quick-toggle:hover {{ background: alpha(@nexus_fg, 0.18); }}
+.nexus button.quick-toggle.on {{ background: @nexus_accent; color: @nexus_on_accent; }}
+.nexus button.quick-toggle.on:hover {{ background: mix(@nexus_accent, @nexus_fg, 0.12); }}
+.nexus button.quick-label {{ background: transparent; padding: 0 2px; }}
+.nexus button.quick-label:hover {{ background: transparent; }}
+.quick-row {{ border-radius: 8px; }}
+.quick-row.on {{ background: alpha(@nexus_accent, 0.16); }}
+.nexus button.quick-entry {{ background: transparent; padding: 7px 8px; font-size: 13px; font-weight: 500; }}
+.nexus button.quick-entry:hover {{ background: alpha(@nexus_fg, 0.08); }}
+.nexus button.quick-entry:disabled {{ opacity: 1; }}
+.quick-row.on button.quick-entry {{ font-weight: 600; }}
+.quick-row.on button.quick-entry image {{ color: @nexus_accent_fg; }}
+.nexus button.quick-more {{ min-width: 30px; min-height: 30px; padding: 0; background: transparent; color: @nexus_muted; }}
+.nexus button.quick-more:hover {{ background: alpha(@nexus_fg, 0.08); color: @nexus_fg; }}
+.quick-unfolded {{ padding: 4px 8px 10px 34px; }}
+.quick-unfolded button {{ padding: 5px 10px; font-size: 13px; }}
+.quick-heading {{ font-size: 12px; font-weight: 600; color: @nexus_muted; padding: 12px 8px 4px; }}
+.quick-panel .error {{ font-size: 12px; padding: 4px 8px; }}
+.quick-panel .quick-title {{ font-size: 13px; font-weight: 600; }}
+.quick-detail {{ font-size: 11px; color: @nexus_muted; }}
+button.quick-entry .quick-detail {{ font-weight: 400; font-size: 12px; }}
+.quick-empty {{ padding: 18px 8px; font-size: 12px; }}
+.quick-slider {{ background: {tile}; border-radius: 12px; padding: 4px 0 4px 6px; }}
+.quick-slider button.quick-more image {{ -gtk-icon-size: 12px; }}
+.quick-slider scale {{ padding: 4px 0; }}
+.quick-card {{ background: {tile}; border-radius: 12px; padding: 8px 10px; margin-bottom: 6px; }}
+.quick-card scale {{ padding: 4px 0; }}
+.nexus button.quick-mute {{ background: transparent; padding: 0; min-width: 30px; min-height: 30px; }}
+.nexus button.quick-mute:hover {{ background: alpha(@nexus_fg, 0.08); }}
+.nexus button.quick-mute.muted-now {{ color: @nexus_danger; }}
+.nexus button.quick-action {{ min-height: 40px; padding: 0; border-radius: 12px; background: {tile}; }}
+.nexus button.quick-action:hover {{ background: alpha(@nexus_fg, 0.13); }}
+.quick-stream {{ padding: 4px 8px 0; }}
+.quick-stream .row-title {{ font-size: 13px; }}
+.quick-stream scale {{ padding: 2px 0 4px; }}
+
+.monitor-page {{ padding: 0; }}
+.monitor .monitor-number, .monitor .monitor-stat, .monitor .monitor-nav-value {{ font-feature-settings: "tnum"; }}
 .monitor .monitor-graph {{ color: @nexus_accent_fg; }}
-.monitor .monitor-bar > trough {{ background: alpha(@nexus_fg, 0.12); border: none; border-radius: 999px; min-height: 6px; }}
-.monitor .monitor-bar > trough > progress {{ background: @nexus_accent; border: none; border-radius: 999px; min-height: 6px; }}
+.monitor .monitor-nav {{ background: transparent; }}
+.monitor .monitor-nav > row {{ padding: 8px 10px 6px; border-radius: 10px; margin-bottom: 2px; }}
+.monitor .monitor-nav > row:hover {{ background: alpha(@nexus_fg, 0.05); }}
+.monitor .monitor-nav > row:selected {{ background: {raised}; color: @nexus_fg; }}
+.monitor .monitor-nav-name {{ font-size: 13px; font-weight: 600; }}
+.monitor .monitor-nav-value {{ font-size: 12px; color: @nexus_muted; }}
+.monitor .monitor-detail {{ padding: 0; }}
+.monitor .monitor-pane {{ padding: 14px 16px 16px; }}
+.monitor .monitor-title {{ font-size: 15px; font-weight: 650; }}
+.monitor .monitor-section {{ font-size: 13px; font-weight: 600; }}
+.monitor .monitor-stat {{ font-size: 14px; font-weight: 600; }}
+.monitor .monitor-line-name {{ font-size: 13px; }}
+.monitor .monitor-swatch {{ min-width: 8px; min-height: 8px; border-radius: 2px; }}
+.monitor .monitor-swatch.used {{ background: @nexus_accent_fg; }}
+.monitor .monitor-swatch.cache {{ background: alpha(@nexus_accent_fg, 0.4); }}
+.monitor .monitor-swatch.free {{ background: alpha(@nexus_accent_fg, 0.12); }}
+.monitor .monitor-value {{ font-size: 20px; font-weight: 650; font-feature-settings: "tnum"; }}
+.monitor .monitor-bar > trough {{ background: alpha(@nexus_fg, 0.14); border: none; border-radius: 999px; min-height: 6px; }}
+.monitor .monitor-bar > trough > progress {{ background: @nexus_accent; border: none; border-radius: 999px; min-height: 6px; margin: 0; min-width: 0; }}
+.monitor-page .monitor-bar > trough, .monitor-page .monitor-bar > trough > progress {{ min-height: 4px; }}
+.monitor-page .monitor-bar > trough > progress {{ background: @nexus_accent_fg; }}
+.monitor-page .monitor-bar.hot > trough > progress {{ background: @nexus_error; }}
 .monitor .monitor-search {{ padding: 4px 10px; min-height: 0; }}
-.monitor button.monitor-end {{ padding: 5px 14px; min-height: 0; font-size: 13px; }}
-.monitor .monitor-columns button {{ padding: 5px 8px; min-height: 0; font-size: 12px; font-weight: 600; color: @nexus_muted; background: transparent; border: none; border-radius: 8px; outline: none; box-shadow: none; }}
-.monitor .monitor-columns button:hover {{ color: @nexus_fg; background: alpha(@nexus_fg, 0.06); }}
+.monitor button.monitor-tree, .monitor button.monitor-end {{ padding: 4px 12px; min-height: 0; font-size: 13px; }}
+.monitor button.monitor-tree:checked {{ background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; }}
+.monitor .monitor-footer {{ border-top: 1px solid alpha(@nexus_fg, 0.08); padding-top: 8px; }}
+.monitor .monitor-question {{ font-size: 13px; font-weight: 600; }}
+.monitor .monitor-columns button {{ padding: 4px 0; min-height: 0; font-size: 12px; font-weight: 600; color: @nexus_muted; background: transparent; border: none; outline: none; box-shadow: none; }}
+.monitor .monitor-columns button:hover {{ color: @nexus_fg; background: alpha(@nexus_fg, 0.07); }}
 .monitor .monitor-columns button.active {{ color: @nexus_accent_fg; background: alpha(@nexus_accent, 0.16); }}
 .monitor .monitor-list {{ background: transparent; }}
-.monitor .monitor-list row {{ padding: 4px 8px; border-radius: 8px; font-size: 13px; font-feature-settings: "tnum"; }}
-.monitor .monitor-list row:hover {{ background: alpha(@nexus_fg, 0.05); }}
-.monitor .monitor-list row:selected {{ background: alpha(@nexus_accent, 0.18); color: @nexus_fg; }}
-.tray-panel {{ padding: 18px; }}
-.battery-panel {{ padding: 18px; }}
-.battery-panel .power-profile {{ padding: 10px 12px; border-radius: 10px; }}
-.battery-panel .power-profile.active {{ background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; }}
+.monitor .monitor-list row {{ padding: 4px 8px; border-radius: 6px; font-size: 13px; font-feature-settings: "tnum"; }}
+.monitor .monitor-list row:hover {{ background: alpha(@nexus_fg, 0.06); }}
+.monitor .monitor-list row:selected {{ background: alpha(@nexus_fg, 0.13); color: @nexus_fg; }}
+
+/* Phone: one header for every state, then what that state needs. */
+.phone-page .phone-avatar {{ min-width: 48px; min-height: 48px; border-radius: 12px; background: alpha(@nexus_fg, 0.07); color: @nexus_muted; }}
+.phone-page .phone-avatar.on {{ background: alpha(@nexus_accent, 0.16); color: @nexus_accent_fg; }}
+.nexus .status-dot {{ min-width: 8px; min-height: 8px; border-radius: 999px; background: @nexus_muted; }}
+.nexus .status-dot.on {{ background: @nexus_accent_fg; }}
+.nexus .status-dot.bad {{ background: @nexus_error; }}
+.phone-page .phone-notice .notice-icon {{ color: @nexus_muted; margin-top: 1px; }}
+.phone-page .phone-notice.problem {{ background: alpha(@nexus_error, 0.1); }}
+.phone-page .phone-notice.problem .notice-icon {{ color: @nexus_error; }}
+.phone-page .phone-pair {{ padding: 20px; }}
+.phone-page .qr-frame {{ border-radius: 12px; background: #ffffff; }}
+.phone-page .step-number {{ min-width: 22px; min-height: 22px; border-radius: 999px; background: alpha(@nexus_fg, 0.08); font-size: 12px; font-weight: 650; font-feature-settings: "tnum"; }}
+.phone-page .pair-manual {{ border-top: 1px solid alpha(@nexus_fg, 0.08); padding-top: 14px; margin-top: 4px; }}
+.phone-page .phone-stat .monitor-value {{ font-size: 18px; }}
+.phone-page .phone-stat progressbar, .phone-page .phone-stat progressbar > trough {{ min-width: 40px; }}
+.monitor .monitor-bar.low > trough > progress {{ background: @nexus_error; }}
+.nexus .phone-list > row {{ padding: 0 4px; border-radius: 0; border-bottom: 1px solid alpha(@nexus_fg, 0.06); }}
+/* Rows fill their card edge to edge: the outer ones take its corners, so a hover follows its shape. */
+.nexus .phone-list > row:first-child {{ border-top-left-radius: 12px; border-top-right-radius: 12px; }}
+.nexus .phone-list > row:last-child {{ border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }}
+.nexus .phone-list > row:last-child {{ border-bottom: none; }}
+.nexus .phone-list > row:hover {{ background: alpha(@nexus_fg, 0.04); }}
+.nexus .notification-from {{ opacity: 0.6; }}
+
+/* Messages: conversations in a quiet column, the open one beside them. */
+window.messages .messages-side {{ background: mix(@nexus_bg, @nexus_fg, 0.025); border-right: 1px solid alpha(@nexus_fg, 0.06); }}
+window.messages .messages-top {{ padding: 18px 14px 12px 20px; }}
+window.messages .threads {{ background: transparent; padding: 0 8px 8px; }}
+window.messages .threads > row {{ border-radius: 10px; padding: 8px 10px; margin: 1px 0; }}
+window.messages .threads > row:hover {{ background: alpha(@nexus_fg, 0.05); }}
+window.messages .threads > row:selected {{ background: alpha(@nexus_fg, 0.1); color: @nexus_fg; }}
+window.messages .avatar {{ border-radius: 999px; background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; font-weight: 650; font-size: 13px; }}
+window.messages .conversation-head {{ min-height: 40px; padding: 12px 24px; border-bottom: 1px solid alpha(@nexus_fg, 0.06); }}
+window.messages .conversation-to {{ margin: 12px 24px 0; }}
+window.messages .bubbles {{ padding: 8px 24px 16px; }}
+window.messages .bubble {{ padding: 8px 13px; border-radius: 18px; background: {tile}; font-size: 14.5px; }}
+window.messages .bubble.out {{ background: @nexus_accent; color: @nexus_on_accent; }}
+window.messages .bubble.out selection {{ background: alpha(@nexus_on_accent, 0.3); color: @nexus_on_accent; }}
+window.messages .bubble-time {{ margin: 22px 0 0; font-weight: 500; }}
+window.messages .bubble-note {{ font-size: 11.5px; margin: 1px 6px 0; }}
+window.messages .failed .bubble, window.messages .failed .voice, window.messages .failed fixed, window.messages .failed .attachment-file {{ opacity: 0.6; }}
+window.messages button.note-action {{ padding: 2px 8px; font-size: 12px; }}
+/* What messages carry: pictures, voice, files. */
+window.messages .attachment-image {{ border-radius: 14px; background: alpha(@nexus_fg, 0.06); }}
+window.messages .attachment-loading {{ padding: 8px 2px; }}
+window.messages button.attachment-file {{ padding: 8px 14px 8px 12px; border-radius: 14px; background: {tile}; }}
+window.messages button.attachment-file:hover {{ background: mix(@nexus_bg, @nexus_fg, 0.14); }}
+window.messages button.attachment-file.out {{ background: @nexus_accent; color: @nexus_on_accent; }}
+window.messages button.attachment-file.out .muted, window.messages button.attachment-file.out .row-title {{ color: @nexus_on_accent; }}
+window.messages .voice {{ min-width: 240px; padding: 6px 14px 6px 6px; border-radius: 22px; background: {tile}; }}
+window.messages .voice.out {{ background: @nexus_accent; color: @nexus_on_accent; }}
+window.messages .voice button.voice-play {{ min-width: 32px; min-height: 32px; padding: 0; border-radius: 999px; background: alpha(@nexus_fg, 0.1); }}
+window.messages .voice.out button.voice-play {{ background: alpha(@nexus_on_accent, 0.2); color: @nexus_on_accent; }}
+window.messages .voice-bar > trough {{ min-height: 4px; border-radius: 999px; background: alpha(@nexus_fg, 0.16); border: none; }}
+window.messages .voice-bar > trough > progress {{ min-height: 4px; border-radius: 999px; background: @nexus_fg; border: none; }}
+window.messages .voice.out .voice-bar > trough {{ background: alpha(@nexus_on_accent, 0.3); }}
+window.messages .voice.out .voice-bar > trough > progress {{ background: @nexus_on_accent; }}
+window.messages .voice-time {{ font-size: 12px; font-feature-settings: "tnum"; min-width: 30px; }}
+/* Dropping files: the conversation says it takes them. */
+window.messages .conversation.drop .bubbles-scroll {{ background: alpha(@nexus_accent, 0.07); box-shadow: inset 0 0 0 2px alpha(@nexus_accent, 0.55); border-radius: 12px; }}
+window.messages .compose-status {{ padding: 0 24px 6px 72px; }}
+/* The composer: round buttons either side of one field that grows with the text. */
+window.messages .composer {{ padding: 6px 20px 18px; }}
+window.messages .compose-field {{ background: alpha(@nexus_fg, 0.07); border-radius: 20px; min-height: 40px; }}
+window.messages .compose-field:focus-within {{ box-shadow: inset 0 0 0 1px alpha(@nexus_accent, 0.5); }}
+window.messages textview.compose-text, window.messages textview.compose-text > text {{ background: transparent; color: @nexus_fg; caret-color: @nexus_accent; font-size: 14.5px; }}
+window.messages .compose-placeholder {{ color: @nexus_muted; font-size: 14.5px; }}
+window.messages .compose-chips {{ padding: 10px 10px 2px; }}
+window.messages .chip-image {{ border-radius: 12px; }}
+window.messages button.chip-file {{ background: alpha(@nexus_fg, 0.08); border-radius: 12px; padding: 8px 30px 8px 10px; }}
+window.messages button.chip-remove {{ min-width: 20px; min-height: 20px; padding: 0; margin: 4px; border-radius: 999px; background: alpha(#000000, 0.62); color: #ffffff; -gtk-icon-size: 12px; }}
+window.messages button.chip-remove:hover {{ background: alpha(#000000, 0.8); }}
+window.messages button.compose-round {{ min-width: 40px; min-height: 40px; padding: 0; border-radius: 999px; background: transparent; color: @nexus_muted; }}
+window.messages button.compose-round:hover {{ background: alpha(@nexus_fg, 0.08); color: @nexus_fg; }}
+window.messages button.compose-round.send {{ background: @nexus_accent; color: @nexus_on_accent; }}
+window.messages button.compose-round.send:hover {{ background: mix(@nexus_accent, @nexus_fg, 0.12); }}
+window.call entry.call-number {{ font-size: 24px; font-weight: 600; background: transparent; border: none; box-shadow: none; outline: none; }}
+window.call button.compose-round {{ min-width: 56px; min-height: 56px; background: @nexus_accent; color: @nexus_on_accent; -gtk-icon-size: 22px; }}
+window.call button.compose-round:hover {{ background: mix(@nexus_accent, @nexus_fg, 0.12); color: @nexus_on_accent; }}
+window.call button.compose-round:disabled {{ opacity: 0.4; }}
+window.call .error {{ color: @nexus_error; }}
+window.call button.compose-round.hang-up {{ background: @nexus_error; color: #ffffff; }}
+window.call button.compose-round.hang-up:hover {{ background: mix(@nexus_error, #000000, 0.12); }}
+window.messages button.compose-round.hang-up {{ background: @nexus_error; color: #ffffff; }}
+window.messages button.compose-round.hang-up:hover {{ background: mix(@nexus_error, #000000, 0.12); }}
+window.messages .compose-recording {{ min-height: 40px; padding: 0 16px; border-radius: 20px; background: alpha(@nexus_error, 0.1); }}
+@keyframes rec-pulse {{ 50% {{ opacity: 0.35; }} }}
+window.messages .rec-dot {{ min-width: 10px; min-height: 10px; border-radius: 999px; background: @nexus_danger; animation: rec-pulse 1.2s ease-in-out infinite; }}
+window.messages .rec-time {{ font-feature-settings: "tnum"; font-weight: 600; min-width: 36px; }}
+window.messages levelbar.rec-level > trough {{ padding: 0; background: none; border: none; }}
+window.messages levelbar.rec-level > trough > block {{ min-width: 3px; min-height: 14px; margin: 0 1px; border-radius: 999px; border: none; background: @nexus_danger; }}
+window.messages levelbar.rec-level > trough > block.empty {{ background: alpha(@nexus_fg, 0.14); }}
+window.messages .messages-state {{ padding: 32px; }}
+.nexus .package-list {{ background: transparent; }}
+.nexus .package-list row {{ background: transparent; padding: 0; }}
+.nexus .package-row {{ padding: 9px 14px 9px 2px; border-bottom: 1px solid alpha(@nexus_fg, 0.06); }}
+.nexus .package-badge {{ font-size: 11px; font-weight: 600; color: @nexus_muted; background: alpha(@nexus_fg, 0.08); border-radius: 5px; padding: 0 6px; }}
+.nexus .package-message {{ padding: 0 24px 48px; }}
+.nexus .package-done {{ background: alpha(@nexus_accent, 0.14); border-radius: 8px; padding: 8px 12px; }}
+.nexus .package-sheet {{ background: {tile}; border-radius: 12px; padding: 14px; }}
+.nexus button.flat.package-details, .nexus button.flat.package-details:hover {{ background: transparent; padding: 4px 0; }}
+.nexus button.flat.package-details:focus-visible {{ outline-offset: 4px; }}
+.nexus .package-log-frame {{ background: {raised}; border-radius: 12px; }}
+.nexus .package-log {{ background: transparent; font-family: 'Geist Mono', monospace; font-size: 12px; color: @nexus_fg; }}
+.nexus .package-log text {{ background: transparent; color: @nexus_fg; }}
+.nexus progressbar.package-progress > trough {{ background: alpha(@nexus_fg, 0.14); border: none; border-radius: 999px; min-height: 6px; }}
+.nexus progressbar.package-progress > trough > progress {{ background: @nexus_accent; border: none; border-radius: 999px; min-height: 6px; min-width: 0; margin: 0; }}
+.tray-panel {{ padding: 10px; }}
+.battery-panel {{ padding: 14px; }}
+.battery-panel .power-profile {{ padding: 7px 10px; background: transparent; }}
+.battery-panel .power-profile:hover {{ background: alpha(@nexus_fg, 0.08); }}
+.battery-panel .power-profile.active {{ background: alpha(@nexus_accent, 0.16); color: @nexus_fg; }}
 .battery-panel .power-profile .profile-check {{ opacity: 0; }}
-.battery-panel .power-profile.active .profile-check {{ opacity: 1; }}
-.tray-item {{ padding: 10px 12px; }}
-.tray-item.needs-attention {{ background: @nexus_surface; color: @nexus_accent_fg; }}
-.tray-menu button {{ background: transparent; padding: 7px 12px; }}
+.battery-panel .power-profile.active .profile-check {{ opacity: 1; color: @nexus_accent_fg; }}
+.tray-item {{ padding: 8px 10px; }}
+.tray-item.needs-attention {{ background: alpha(@nexus_fg, 0.1); color: @nexus_accent_fg; }}
+.tray-menu button {{ background: transparent; padding: 7px 10px; }}
 .tray-menu button:hover {{ background: alpha(@nexus_fg, 0.08); }}
-.launcher .search-row {{ padding: 20px 22px 16px; color: @nexus_accent_fg; }}
-.nexus .launcher entry, .nexus .launcher entry:focus-within {{ background: transparent; border: none; box-shadow: none; padding: 4px; font-size: 18px; color: @nexus_fg; }}
-.launcher .keycap {{ font-size: 10px; color: @nexus_muted; border: none; border-radius: 5px; padding: 4px 6px; }}
-.launcher .app-results {{ background: transparent; padding: 4px 10px 6px; }}
-.launcher .app-results row {{ border-radius: 12px; background: transparent; color: @nexus_fg; outline: none; }}
-.nexus .launcher, .nexus .launcher *, .nexus button.nav, .nexus button.nav * {{ transition: none; }}
-.launcher .app-results row:hover {{ background: alpha(@nexus_accent,0.10); }}
-.launcher .app-results row:selected {{ background: alpha(@nexus_accent,0.18); }}
-.launcher .app-row {{ padding: 8px 12px; }}
-.launcher .launch-arrow {{ color: transparent; font-size: 13px; }}
-.launcher row:selected .launch-arrow {{ color: @nexus_accent_fg; }}
-.launcher .app-name {{ font-size: 15px; font-weight: 600; }}
+
+/* The launcher: one large field, its results below. */
+.launcher .search-row {{ padding: 14px 16px 14px 20px; color: @nexus_muted; }}
+.nexus .launcher entry, .nexus .launcher entry:focus-within {{ background: transparent; border: none; outline: none; box-shadow: none; padding: 2px 2px 2px 2px; font-size: 20px; font-weight: 400; color: @nexus_fg; }}
+.launcher separator {{ margin: 0; background: alpha(@nexus_fg, 0.08); }}
+.launcher .app-results {{ background: transparent; padding: 6px; }}
+.launcher .app-results row {{ border-radius: 10px; background: transparent; color: @nexus_fg; outline: none; }}
+.nexus button.nav {{ transition: none; }}
+.launcher .app-results row:selected {{ background: alpha(@nexus_fg, 0.12); color: @nexus_fg; }}
+.launcher .app-row {{ padding: 6px 10px; min-height: 40px; }}
+.launcher .app-name {{ font-size: 14px; font-weight: 600; }}
 .launcher .app-description {{ font-size: 12px; color: @nexus_muted; }}
-.launcher .results-heading {{ padding: 0 24px 6px; font-size: 10px; }}
-.launcher .empty-results {{ padding: 24px; }}
+.launcher .app-results row:selected .app-description {{ color: alpha(@nexus_fg, 0.82); }}
+.launcher .app-letter {{ background: mix(@nexus_bg, @nexus_fg, 0.22); color: @nexus_fg; border-radius: 8px; font-size: 16px; font-weight: 600; min-width: 32px; min-height: 32px; }}
+.launcher .empty-results {{ padding: 20px; }}
 .launcher row, .launcher entry, .launcher entry:focus-within {{ border: none; outline: none; }}
-.launcher .launcher-footer {{ padding: 10px 22px 16px; font-size: 11px; }}
+.launcher .error {{ padding: 0 20px 14px; }}
 "#,
         accent = s.accent
     )
@@ -397,22 +882,22 @@ window.nexus.nexus-bar, window.nexus.nexus-frame {{ background: transparent; }}
 /// from below. Each comes in two identical copies so that it can be replayed.
 fn power_entrances() -> String {
     let mut css = String::new();
-    for (side, axis, offset) in [
-        ("left", 'X', -240),
-        ("bottom", 'Y', 160),
-        ("right", 'X', 240),
+    for (side, axis, offset, delay) in [
+        ("left", 'X', -16, 0),
+        ("bottom", 'Y', 12, 0),
+        ("right", 'X', 16, 0),
     ] {
         for copy in ["a", "b"] {
             css += &format!(
-                "@keyframes power-{side}-{copy} {{ from {{ opacity: 0; transform: translate{axis}({offset}px); }} to {{ opacity: 1; transform: translate{axis}(0); }} }}\n\
-                 .nexus button.power-tile.from-{side}.enter-{copy} {{ animation: power-{side}-{copy} 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }}\n"
+                "@keyframes power-{side}-{copy} {{ from {{ opacity: 0; transform: translate{axis}({offset}px); }} to {{ opacity: 1; transform: none; }} }}\n\
+                 .nexus button.power-tile.from-{side}.enter-{copy} {{ animation: power-{side}-{copy} 140ms cubic-bezier(0.2, 0.9, 0.25, 1) {delay}ms both; }}\n"
             );
         }
         // Back the way they came, quicker, as the overlay fades.
         let away = offset * 2 / 3;
         css += &format!(
-            "@keyframes power-{side}-out {{ from {{ opacity: 1; transform: translate{axis}(0); }} to {{ opacity: 0; transform: translate{axis}({away}px); }} }}\n\
-             window.power-overlay.leaving button.power-tile.from-{side} {{ animation: power-{side}-out 220ms cubic-bezier(0.55, 0, 1, 0.45) both; }}\n"
+            "@keyframes power-{side}-out {{ from {{ opacity: 1; transform: none; }} to {{ opacity: 0; transform: translate{axis}({away}px); }} }}\n\
+             window.power-overlay.leaving button.power-tile.from-{side} {{ animation: power-{side}-out 100ms cubic-bezier(0.55, 0, 1, 0.45) both; }}\n"
         );
     }
     css
@@ -745,9 +1230,17 @@ fn apply_desktop_mode(dark: bool, themed: bool, reload: bool) {
         }
     }
 }
-pub fn save(mut settings: Settings) -> Result<Settings> {
+/// Under this, text stops being readable over a busy desktop.
+pub const MIN_OPACITY: u8 = 60;
+fn check(settings: &Settings) -> Result<()> {
     if !["dark", "light"].contains(&settings.mode.as_str()) {
         bail!("Unknown theme mode");
+    }
+    if !STYLES.iter().any(|style| style.id == settings.style) {
+        bail!("Unknown style");
+    }
+    if !LOCK_STYLES.iter().any(|l| l.0 == settings.lock_style) {
+        bail!("Unknown lock screen style");
     }
     if settings.accent.len() != 7
         || !settings.accent.starts_with('#')
@@ -755,6 +1248,11 @@ pub fn save(mut settings: Settings) -> Result<Settings> {
     {
         bail!("Invalid accent color");
     }
+    Ok(())
+}
+pub fn save(mut settings: Settings) -> Result<Settings> {
+    settings.opacity = settings.opacity.map(|v| v.clamp(MIN_OPACITY, 100));
+    check(&settings)?;
     let old = load();
     if let Some(path) = &settings.wallpaper {
         image::ImageReader::open(path)?
@@ -768,7 +1266,8 @@ pub fn save(mut settings: Settings) -> Result<Settings> {
             apply_wallpaper(path)?;
         }
     }
-    if !settings.wallpaper_colors {
+    // Turned off without picking one of the accents: back to the default.
+    if !settings.wallpaper_colors && old.wallpaper_colors && settings.accent == old.accent {
         settings.accent = Settings::default().accent;
     }
     write_theme(&settings)?;
@@ -776,6 +1275,9 @@ pub fn save(mut settings: Settings) -> Result<Settings> {
         &config_dir().join("settings.json"),
         serde_json::to_vec_pretty(&settings)?,
     )?;
+    if old.style != settings.style || old.mode != settings.mode {
+        apply_blur(&settings);
+    }
     if old.mode != settings.mode || old.accent != settings.accent {
         let themed = write_desktop_theme(&settings).unwrap_or_else(|e| {
             eprintln!("Could not write the desktop theme: {e}");
@@ -824,7 +1326,7 @@ mod tests {
     #[test]
     fn accent_text_stays_readable_in_both_modes() {
         for accent in ["#58a0b8", "#40585a", "#e8e0a0", "#91b5a4"] {
-            for bg in ["#f3f4f0", "#151a18"] {
+            for bg in ["#f2f2f5", "#141416"] {
                 let c = readable_on(rgb(accent), rgb(bg));
                 assert!(contrast(c, rgb(bg)) >= 3.5, "{accent} on {bg}");
             }
@@ -850,7 +1352,7 @@ mod tests {
         let colors = desktop_colors("#40585a", true);
         let named = define_colors(&colors);
         assert!(named.contains("@define-color accent_bg_color #40585a;"));
-        assert!(named.contains("@define-color window_bg_color #151a18;"));
+        assert!(named.contains("@define-color window_bg_color #141416;"));
         assert!(named.contains("@define-color accent_fg_color #ffffff;"));
         let vars = color_vars(&colors);
         assert!(vars.contains("--secondary-sidebar-bg-color: "));
@@ -878,12 +1380,65 @@ mod tests {
         );
     }
     #[test]
+    fn wallpaper_accents_carry_colour() {
+        let chroma = |c: [f64; 3]| {
+            c.iter().cloned().fold(0., f64::max) - c.iter().cloned().fold(1., f64::min)
+        };
+        // A forest's dominant colour, muddy before.
+        assert!(chroma(vivid(rgb("#405858"))) > 0.4);
+        // Bark and dry grass come out orange and amber, not brown and mustard.
+        for c in ["#5a4030", "#807040"] {
+            let v = vivid(rgb(c));
+            assert!(chroma(v) > 0.8 && v[0] > 0.9, "{}", hex(v));
+        }
+        // Grey has no hue to keep.
+        assert_eq!(hex(vivid(rgb("#808080"))), Settings::default().accent);
+        // Stays between too dark and too light whatever comes in.
+        for c in ["#0a1420", "#f0e0d0", "#ff0000"] {
+            let v = vivid(rgb(c));
+            let l =
+                (v.iter().cloned().fold(0., f64::max) + v.iter().cloned().fold(1., f64::min)) / 2.;
+            assert!((0.43..=0.57).contains(&l), "{c} -> {l}");
+        }
+    }
+    #[test]
+    fn every_style_has_a_stylesheet() {
+        for style in &STYLES {
+            for mode in ["dark", "light"] {
+                let s = Settings {
+                    style: style.id.into(),
+                    mode: mode.into(),
+                    ..Settings::default()
+                };
+                assert_eq!(s.style().id, style.id);
+                assert!(css(&s).contains("nexus_glass rgba("));
+            }
+        }
+        // Settings saved by another version fall back rather than break the shell.
+        let s = Settings {
+            style: "gone".into(),
+            ..Settings::default()
+        };
+        assert_eq!(s.style().id, "blur");
+    }
+    #[test]
+    fn legacy_settings_load_into_something_saveable() {
+        let s = parse(br##"{"style": "liquid", "lock_style": "gone", "gloss": 1}"##);
+        assert_eq!(s.style, "blur");
+        assert_eq!(s.lock_style, LOCK_STYLES[0].0);
+        check(&s).unwrap();
+        // What is still current stays, and an unreadable file gives the defaults.
+        let s = parse(br##"{"style": "opaque", "lock_style": "bar"}"##);
+        assert_eq!((s.style.as_str(), s.lock_style.as_str()), ("opaque", "bar"));
+        check(&parse(b"")).unwrap();
+    }
+    #[test]
     fn generated_accent_is_stable() {
         let p = std::env::temp_dir().join(format!("nexus-color-{}.png", std::process::id()));
         image::RgbImage::from_pixel(4, 4, image::Rgb([60, 130, 180]))
             .save(&p)
             .unwrap();
-        assert_eq!(accent_for(p.to_str().unwrap()).unwrap(), "#58a0b8");
+        assert_eq!(accent_for(p.to_str().unwrap()).unwrap(), "#3eadd2");
         fs::remove_file(p).unwrap();
     }
 }

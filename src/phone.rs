@@ -2,13 +2,15 @@
 //! and keeps one TCP connection open: newline-delimited JSON both ways. The
 //! phone pushes its notifications; the daemon sends requests (`ls`, `read`,
 //! `write`, `sms_threads`, `sms_list`, `sms_send`, `dismiss`…) that the phone
-//! answers by id. The same port serves the page the pairing QR code opens,
+//! answers by id; `notes_*` requests keep Nexus Notes in step (see
+//! [`crate::notesync`]). The same port serves the page the pairing QR code opens,
 //! which hands the address and token to the app and offers the APK.
 //!
 //! The token in `$XDG_CONFIG_HOME/nexus/phone.json`, made on the first run and
 //! never changed, is the only credential: the QR code stays the same, and any
 //! phone that scanned it reconnects with a tap. Deleting the file revokes them
 //! all. The listener binds the Tailscale address alone, never the LAN.
+use crate::notesync::{self, Side};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -18,10 +20,10 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        Arc, Condvar, Mutex, OnceLock,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -29,8 +31,15 @@ use std::{
 };
 
 pub const PORT: u16 = 47913;
+/// Where `nexus phone mirror` listens for the screen, in the runtime directory.
+pub const CAST_SOCKET: &str = "phone-cast.sock";
 const CHUNK: u64 = 1 << 20;
 const MAX_LINE: u64 = 8 << 20;
+/// What a connection may send before it has shown the token, in bytes and time.
+const MAX_HELLO: u64 = 4 << 10;
+const HELLO_WAIT: Duration = Duration::from_secs(10);
+/// Connections at a time that have not shown it yet.
+const MAX_GREETING: usize = 16;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct PhoneState {
@@ -42,6 +51,74 @@ pub struct PhoneState {
     #[serde(default)]
     pub info: Option<Value>,
     pub error: Option<String>,
+    /// What the phone shows in its notification shade, newest first.
+    #[serde(default)]
+    pub notifications: Vec<PhoneNotification>,
+    /// The phone that connected last, kept across restarts: the one to wait for.
+    #[serde(default)]
+    pub last: Option<String>,
+    /// When it was last connected, in milliseconds since the epoch.
+    #[serde(default)]
+    pub seen: Option<i64>,
+    /// Disconnect let it go: it waits to be tapped in the app.
+    #[serde(default)]
+    pub released: bool,
+    #[serde(default)]
+    pub notes: NotesSync,
+}
+/// Where the notes sync stands, for the Phone page and the phone.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct NotesSync {
+    pub on: bool,
+    pub busy: bool,
+    /// When the two sides last matched, in milliseconds since the epoch.
+    pub last: Option<i64>,
+    /// The copies kept beside pages both sides changed, while they exist.
+    pub conflicts: Vec<String>,
+    pub error: Option<String>,
+}
+/// What the notes sync keeps across restarts.
+#[derive(Default, Serialize, Deserialize)]
+struct NotesSaved {
+    #[serde(default)]
+    off: bool,
+    /// The phone's notes store last synced with.
+    #[serde(default)]
+    current: String,
+    /// By the id of the phone's notes store: a phone that loses its notes
+    /// comes back with a new id, and syncs as for the first time rather than
+    /// passing for having deleted them all.
+    #[serde(default)]
+    stores: HashMap<String, NotesStore>,
+    /// Conflict copies in the desktop's notes.
+    #[serde(default)]
+    conflicts: Vec<String>,
+}
+#[derive(Default, Serialize, Deserialize)]
+struct NotesStore {
+    base: notesync::Manifest,
+    last: i64,
+}
+/// A text in the clipboard history.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Clip {
+    pub text: String,
+    /// Milliseconds since the epoch.
+    pub time: i64,
+    /// Copied on the phone.
+    pub phone: bool,
+}
+const HISTORY: usize = 50;
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct PhoneNotification {
+    pub key: String,
+    pub app: String,
+    pub title: String,
+    pub text: String,
+    /// Milliseconds since the epoch.
+    pub time: i64,
+    /// An icon name, or the path of the app's icon.
+    pub icon: String,
 }
 struct Link {
     out: Mutex<TcpStream>,
@@ -61,13 +138,21 @@ pub struct Phone {
     token: String,
     link: Mutex<Option<Arc<Link>>>,
     next_id: AtomicU64,
-    locked: std::sync::atomic::AtomicBool,
+    /// Connections that have not said who they are yet.
+    greeting: AtomicUsize,
     pub state: Mutex<PhoneState>,
     /// Desktop notification id of each phone notification, and its post
     /// time, by its key: the phone sends them all again on reconnecting.
     /// Kept on disk, so a restarted daemon does not show them again either.
     shown: Mutex<HashMap<String, (u32, i64)>>,
+    /// The clipboard text last shared either way, so that it does not echo.
+    clip: Mutex<String>,
+    /// The texts copied lately, here or on the phone, newest first. Kept in
+    /// memory only: copies often hold what should not reach the disk.
+    history: Mutex<Vec<Clip>>,
     bus: OnceLock<Option<zbus::blocking::Connection>>,
+    /// Set when the notes should sync soon: the phone connected or changed some.
+    kick: (Mutex<bool>, Condvar),
 }
 
 fn config() -> PathBuf {
@@ -78,13 +163,31 @@ fn config() -> PathBuf {
         })
         .join("nexus/phone.json")
 }
-fn seen_path() -> PathBuf {
+fn state_file(name: &str) -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
         })
-        .join("nexus/phone-notifications.json")
+        .join("nexus")
+        .join(name)
+}
+fn seen_path() -> PathBuf {
+    state_file("phone-notifications.json")
+}
+/// The phone that connected last and when: `[name, ms]`.
+fn last_path() -> PathBuf {
+    state_file("phone-last.json")
+}
+fn save_last(s: &PhoneState) {
+    let path = last_path();
+    let _ = fs::create_dir_all(path.parent().unwrap());
+    let _ = fs::write(path, json!([s.last, s.seen]).to_string());
+}
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 /// The newest 500 by post time: removals on the phone keep it short anyway.
 fn save_seen(shown: &HashMap<String, (u32, i64)>) {
@@ -96,6 +199,10 @@ fn save_seen(shown: &HashMap<String, (u32, i64)>) {
     let _ = fs::write(path, serde_json::to_vec(&entries).unwrap_or_default());
 }
 fn new_token() -> Result<String> {
+    // A new token unpairs every phone: none is waited for any more, and
+    // what was kept of its messages goes with it.
+    let _ = fs::remove_file(last_path());
+    let _ = fs::remove_dir_all(mms_cache());
     let mut bytes = [0u8; 24];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -129,11 +236,22 @@ fn load_token() -> Result<String> {
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |d, (x, y)| d | (x ^ y)) == 0
 }
+/// Where to listen. Lab only: `NEXUS_PHONE_LISTEN` names the address instead,
+/// for a stand-in phone on this machine.
+fn listen_ip() -> Result<String> {
+    #[cfg(feature = "lab")]
+    if let Ok(ip) = std::env::var("NEXUS_PHONE_LISTEN") {
+        return Ok(ip);
+    }
+    tailscale_ip()
+}
 fn tailscale_ip() -> Result<String> {
     let out = Command::new("tailscale")
         .args(["ip", "-4"])
         .output()
-        .context("Tailscale is not installed")?;
+        .context(
+            "Tailscale is not installed. Install it and sign in to the tailnet your phone uses.",
+        )?;
     let ip = String::from_utf8_lossy(&out.stdout)
         .lines()
         .next()
@@ -141,7 +259,7 @@ fn tailscale_ip() -> Result<String> {
         .trim()
         .to_owned();
     if !out.status.success() || ip.is_empty() {
-        bail!("Tailscale is not connected. Run `tailscale up`.");
+        bail!("Tailscale is not connected. Run `tailscale up`; this retries by itself.");
     }
     Ok(ip)
 }
@@ -152,9 +270,11 @@ fn screen_locked() -> bool {
     let Ok(procs) = fs::read_dir("/proc") else {
         return false;
     };
-    procs
-        .flatten()
-        .any(|p| fs::read(p.path().join("cmdline")).is_ok_and(|c| is_locker(&c)))
+    // comm first: reading a cmdline takes the lock of that process's memory.
+    procs.flatten().any(|p| {
+        fs::read(p.path().join("comm")).is_ok_and(|c| matches!(&c[..], b"nexus\n" | b"hyprlock\n"))
+            && fs::read(p.path().join("cmdline")).is_ok_and(|c| is_locker(&c))
+    })
 }
 /// A /proc cmdline: NUL-separated arguments.
 fn is_locker(cmdline: &[u8]) -> bool {
@@ -165,6 +285,35 @@ fn is_locker(cmdline: &[u8]) -> bool {
             && args.get(1) == Some(&&b"lock"[..])
             && !args.contains(&&b"--preview"[..]))
 }
+/// The file `name` in `dir`, or `name (1).ext` and so on if that is taken, created
+/// empty so that nothing else takes it before the caller renames over it.
+fn claim_name(dir: &Path, name: &str) -> Result<PathBuf> {
+    let (stem, ext) = {
+        let path = Path::new(name);
+        (
+            path.file_stem().unwrap_or_default().to_string_lossy(),
+            path.extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default(),
+        )
+    };
+    for i in 0..10_000 {
+        let path = dir.join(match i {
+            0 => name.to_owned(),
+            _ => format!("{stem} ({i}){ext}"),
+        });
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    bail!("No free name left")
+}
 fn hostname() -> String {
     fs::read_to_string("/etc/hostname")
         .map(|h| h.trim().to_owned())
@@ -174,9 +323,16 @@ pub fn apk() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
         .join(".local/share/nexus/nexus-phone.apk")
 }
-fn read_line(r: &mut impl BufRead) -> Result<Option<String>> {
+/// Lab only: `NEXUS_PHONE_FAKE` names a JSON file standing in for the phone,
+/// `{"state": PhoneState, "replies": {op: data | {"error": text}}}`, read anew
+/// each time. No listener, no link: nothing reaches a real phone.
+#[cfg(feature = "lab")]
+fn fake() -> Option<Value> {
+    serde_json::from_slice(&fs::read(std::env::var_os("NEXUS_PHONE_FAKE")?).ok()?).ok()
+}
+fn read_line(r: &mut impl BufRead, limit: u64) -> Result<Option<String>> {
     let mut line = String::new();
-    if r.take(MAX_LINE).read_line(&mut line)? == 0 {
+    if r.take(limit).read_line(&mut line)? == 0 {
         return Ok(None);
     }
     if !line.ends_with('\n') {
@@ -196,17 +352,51 @@ impl Phone {
             shown: Mutex::new(shown.into_iter().collect()),
             ..Self::default()
         });
+        if let Ok((last, seen)) = fs::read(last_path())
+            .map_err(anyhow::Error::from)
+            .and_then(|b| Ok(serde_json::from_slice::<(Option<String>, Option<i64>)>(&b)?))
+        {
+            let mut s = phone.state.lock().unwrap();
+            (s.last, s.seen) = (last, seen);
+        }
+        #[cfg(feature = "lab")]
+        if std::env::var_os("NEXUS_PHONE_FAKE").is_some() {
+            let p = phone.clone();
+            thread::spawn(move || {
+                loop {
+                    if let Some(s) =
+                        fake().and_then(|f| serde_json::from_value(f["state"].clone()).ok())
+                    {
+                        *p.state.lock().unwrap() = s;
+                    }
+                    thread::sleep(Duration::from_secs(1));
+                }
+            });
+            return Ok(phone);
+        }
         let p = phone.clone();
         thread::spawn(move || {
             // ponytail: binds the address Tailscale had at startup; a new one
             // takes a daemon restart.
             loop {
-                let bound =
-                    tailscale_ip().and_then(|ip| Ok((TcpListener::bind((ip.as_str(), PORT))?, ip)));
+                let bound = listen_ip().and_then(|ip| {
+                    let listener = TcpListener::bind((ip.as_str(), PORT)).map_err(|e| {
+                        anyhow::anyhow!(match e.kind() {
+                            std::io::ErrorKind::AddrInUse => format!(
+                                "Port {PORT} is already in use. Another Nexus daemon probably holds it: stop it, and this retries by itself."
+                            ),
+                            _ => format!("Can't listen for your phone: {e}. This retries every 10 seconds."),
+                        })
+                    })?;
+                    Ok((listener, ip))
+                });
                 match bound {
                     Ok((listener, ip)) => {
                         p.set_url(&ip);
                         for stream in listener.incoming().flatten() {
+                            if !p.admit() {
+                                continue;
+                            }
                             let p = p.clone();
                             thread::spawn(move || p.serve(stream));
                         }
@@ -221,9 +411,11 @@ impl Phone {
         let p = phone.clone();
         thread::spawn(move || {
             loop {
-                let locked = screen_locked();
-                p.locked.store(locked, Ordering::Relaxed);
-                if locked && let Some(link) = p.link.lock().unwrap().take() {
+                // Going through every process: only while there is a link to drop.
+                if p.link.lock().unwrap().is_some()
+                    && screen_locked()
+                    && let Some(link) = p.link.lock().unwrap().take()
+                {
                     Self::release(&link, "locked");
                 }
                 thread::sleep(Duration::from_secs(2));
@@ -231,8 +423,25 @@ impl Phone {
         });
         let p = phone.clone();
         thread::spawn(move || {
+            if let Err(e) = p.follow_restarts() {
+                eprintln!("Phone notifications: {e}");
+            }
+        });
+        let p = phone.clone();
+        thread::spawn(move || {
             if let Err(e) = p.follow_dismissals() {
                 eprintln!("Phone notifications: {e}");
+            }
+        });
+        let p = phone.clone();
+        thread::spawn(move || p.sync_notes());
+        let p = phone.clone();
+        thread::spawn(move || {
+            loop {
+                if let Err(e) = p.share_clipboard() {
+                    eprintln!("Clipboard: {e}");
+                }
+                thread::sleep(Duration::from_secs(10));
             }
         });
         Ok(phone)
@@ -252,17 +461,34 @@ impl Phone {
     pub fn disconnect(&self) {
         if let Some(link) = self.link.lock().unwrap().take() {
             Self::release(&link, "released");
+            self.state.lock().unwrap().released = true;
         }
     }
 
+    /// Whether another connection may wait to say who it is.
+    fn admit(&self) -> bool {
+        // Only the accepting thread adds, so this cannot overshoot.
+        let room = self.greeting.load(Ordering::Relaxed) < MAX_GREETING;
+        if room {
+            self.greeting.fetch_add(1, Ordering::Relaxed);
+        }
+        room
+    }
+    /// The first line of an admitted connection.
+    // ponytail: the wait is per read, so a peer trickling bytes keeps its slot for
+    // long; a deadline if the tailnet ever holds anything hostile.
+    fn greet(stream: &TcpStream) -> Option<(BufReader<TcpStream>, String)> {
+        let _ = stream.set_read_timeout(Some(HELLO_WAIT));
+        let mut reader = BufReader::new(stream.try_clone().ok()?);
+        let first = read_line(&mut reader, MAX_HELLO).ok()??;
+        Some((reader, first))
+    }
     fn serve(self: &Arc<Self>, stream: TcpStream) {
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(90)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(20)));
-        let Ok(clone) = stream.try_clone() else {
-            return;
-        };
-        let mut reader = BufReader::new(clone);
-        let Ok(Some(first)) = read_line(&mut reader) else {
+        let greeted = Self::greet(&stream);
+        // What follows answers at once, or holds the token.
+        self.greeting.fetch_sub(1, Ordering::Relaxed);
+        let Some((mut reader, first)) = greeted else {
             return;
         };
         if first.starts_with("GET ") {
@@ -271,14 +497,33 @@ impl Phone {
         }
         let hello: Value = serde_json::from_str(&first).unwrap_or_default();
         let token = hello["token"].as_str().unwrap_or_default();
-        if hello["t"] != "hello" || !same(token, &self.token) {
+        if !same(token, &self.token) {
             return;
         }
+        // The screen's frames, straight to the viewer that asked for them. The
+        // phone repeats one every few seconds, so a dead link times out.
+        if hello["t"] == "cast" {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+            if !screen_locked()
+                && let Ok(mut viewer) = crate::runtime().and_then(|d| {
+                    Ok(std::os::unix::net::UnixStream::connect(
+                        d.join(CAST_SOCKET),
+                    )?)
+                })
+            {
+                let _ = std::io::copy(&mut reader, &mut viewer);
+            }
+            return;
+        }
+        if hello["t"] != "hello" {
+            return;
+        }
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(90)));
         let link = Arc::new(Link {
             out: Mutex::new(stream),
             pending: Mutex::default(),
         });
-        if self.locked.load(Ordering::Relaxed) {
+        if screen_locked() {
             let _ = link.send(&json!({ "t": "bye", "reason": "locked" }));
             return;
         }
@@ -292,8 +537,15 @@ impl Phone {
         if let Some(old) = self.link.lock().unwrap().replace(link.clone()) {
             Self::release(&old, "replaced");
         }
-        self.state.lock().unwrap().name =
-            Some(hello["name"].as_str().unwrap_or("Phone").to_owned());
+        {
+            let mut s = self.state.lock().unwrap();
+            let name = hello["name"].as_str().unwrap_or("Phone").to_owned();
+            (s.name, s.last) = (Some(name.clone()), Some(name));
+            (s.seen, s.released) = (Some(now_ms()), false);
+            save_last(&s);
+            let _ = link.send(&json!({ "t": "notes_state", "state": s.notes }));
+        }
+        self.kick_notes();
         let ping = Arc::downgrade(&link);
         thread::spawn(move || {
             while let Some(link) = ping.upgrade() {
@@ -304,13 +556,15 @@ impl Phone {
                 thread::sleep(Duration::from_secs(30));
             }
         });
-        while let Ok(Some(line)) = read_line(&mut reader) {
+        while let Ok(Some(line)) = read_line(&mut reader, MAX_LINE) {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
             match msg["t"].as_str() {
                 Some("notif") => self.notify(&msg),
                 Some("notif_gone") => self.close(msg["key"].as_str().unwrap_or_default()),
+                Some("clip") => self.copy(msg["text"].as_str().unwrap_or_default()),
+                Some("notes_changed") => self.kick_notes(),
                 // On connecting, then with each answer to the daemon's ping.
                 Some("info" | "pong") if msg["info"].is_object() => {
                     self.state.lock().unwrap().info = Some(msg["info"].clone());
@@ -338,6 +592,9 @@ impl Phone {
             let mut s = self.state.lock().unwrap();
             s.name = None;
             s.info = None;
+            s.notifications.clear();
+            s.seen = Some(now_ms());
+            save_last(&s);
         }
     }
     /// The pairing page and the APK, for a browser holding the token.
@@ -373,11 +630,15 @@ impl Phone {
                     "intent://pair?host={host}&port={PORT}&token={token}&name={}#Intent;scheme=nexus;package=io.github.vitrixxl.nexus;end",
                     hostname()
                 );
+                let host_name = hostname();
                 let page = format!(
-                    r#"<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Nexus</title>
-<style>body{{font:18px system-ui;background:#0d1014;color:#e6e8eb;display:grid;gap:16px;padding:32px;max-width:420px;margin:auto}}a{{display:block;padding:16px;border-radius:14px;text-align:center;text-decoration:none;font-weight:600}}.p{{background:#7aa2f7;color:#0d1014}}.s{{background:#1c2128;color:#e6e8eb}}</style>
-<h2>Nexus</h2><a class=p href="{intent}">Pair this phone</a><a class=s href="/nexus.apk?t={token}">Install the app first</a>
-<p style="opacity:.6;font-size:14px">Installed? Tap Pair, then grant the permissions the app lists.</p>"#
+                    r#"<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><meta name=color-scheme content="dark light"><title>Pair with Nexus</title>
+<style>:root{{--bg:#141416;--surface:#1f1f22;--fg:#f4f4f5;--muted:#b4b4bb}}@media(prefers-color-scheme:light){{:root{{--bg:#f2f2f5;--surface:#fff;--fg:#1d1d1f;--muted:#62626a}}}}
+body{{font:16px system-ui,sans-serif;background:var(--bg);color:var(--fg);display:grid;gap:12px;padding:40px 20px;max-width:420px;margin:auto}}h1{{font-size:28px;margin:0}}p{{color:var(--muted);margin:0 0 12px;line-height:1.45}}
+a{{display:block;padding:16px;border-radius:16px;text-align:center;text-decoration:none;font-weight:600}}.p{{background:#0a84ff;color:#fff}}.s{{background:var(--surface);color:var(--fg)}}small{{color:var(--muted);font-size:14px;line-height:1.45}}</style>
+<h1>Pair with {host_name}</h1><p>Share this phone's notifications, files, messages and clipboard with your desktop.</p>
+<a class=p href="{intent}">Pair this phone</a><a class=s href="/nexus.apk?t={token}">Install the Nexus app first</a>
+<small>No app yet? Install it, then come back here and tap Pair. The app then lists what to allow.</small>"#
                 );
                 reply(
                     &mut stream,
@@ -400,6 +661,16 @@ impl Phone {
                     b"Build the app first.",
                 )?,
             },
+            // What the phone compares with the app it runs, to offer the update.
+            "/nexus.apk.sha256" => match fs::read(apk()) {
+                Ok(bytes) => reply(
+                    &mut stream,
+                    "200 OK",
+                    "text/plain",
+                    crate::notesync::hash_bytes(&bytes).as_bytes(),
+                )?,
+                Err(_) => reply(&mut stream, "404 Not Found", "text/plain", b"")?,
+            },
             _ => reply(&mut stream, "404 Not Found", "text/plain", b"")?,
         }
         Ok(())
@@ -407,6 +678,15 @@ impl Phone {
 
     /// Sends `op` to the phone and waits for its answer.
     pub fn request(&self, op: &str, args: Value) -> Result<Value> {
+        #[cfg(feature = "lab")]
+        if let Some(f) = fake() {
+            let r = &f["replies"][op];
+            return match r["error"].as_str() {
+                Some(e) => Err(anyhow::anyhow!("{e}")),
+                None if r.is_null() => bail!("No phone is connected"),
+                None => Ok(r.clone()),
+            };
+        }
         let link = self
             .link
             .lock()
@@ -436,9 +716,10 @@ impl Phone {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "file".into());
-            let dest = dir.join(&name);
-            let result = (|| -> Result<()> {
-                let part = dir.join(format!(".{name}.part"));
+            // Its own: the same file may be pulled twice at once.
+            let id = p.next_id.fetch_add(1, Ordering::Relaxed);
+            let part = dir.join(format!(".{name}.{id}.part"));
+            let result = (|| -> Result<PathBuf> {
                 let mut f = fs::File::create(&part)?;
                 let mut offset = 0;
                 loop {
@@ -453,11 +734,15 @@ impl Phone {
                         break;
                     }
                 }
-                fs::rename(part, &dest)?;
-                Ok(())
+                let dest = claim_name(&dir, &name)?;
+                fs::rename(&part, &dest)?;
+                Ok(dest)
             })();
+            if result.is_err() {
+                let _ = fs::remove_file(&part);
+            }
             p.desktop_notice(&match result {
-                Ok(()) => format!("Saved {}", dest.display()),
+                Ok(dest) => format!("Saved {}", dest.display()),
                 Err(e) => format!("Could not copy {name}: {e}"),
             });
         });
@@ -497,6 +782,276 @@ impl Phone {
                 Err(e) => format!("Could not send {name}: {e}"),
             });
         });
+    }
+
+    fn kick_notes(&self) {
+        *self.kick.0.lock().unwrap() = true;
+        self.kick.1.notify_all();
+    }
+    /// Turns the notes sync on or off; the phone hears of it at once.
+    pub fn set_notes_sync(&self, on: bool) {
+        let notes = {
+            let mut s = self.state.lock().unwrap();
+            s.notes.on = on;
+            s.notes.clone()
+        };
+        if let Some(link) = self.link.lock().unwrap().clone() {
+            let _ = link.send(&json!({ "t": "notes_state", "state": notes }));
+        }
+        self.kick_notes();
+    }
+    /// Shows `f`'s change of the notes sync's state, here and on the phone.
+    fn notes_state(&self, f: impl FnOnce(&mut NotesSync)) {
+        let notes = {
+            let mut s = self.state.lock().unwrap();
+            f(&mut s.notes);
+            s.notes.clone()
+        };
+        if let Some(link) = self.link.lock().unwrap().clone() {
+            let _ = link.send(&json!({ "t": "notes_state", "state": notes }));
+        }
+    }
+    /// Syncs the notes when the phone connects or says it changed some, and
+    /// when the desktop's change, looked at every 15 seconds while linked.
+    fn sync_notes(&self) {
+        let path = state_file("notes-sync.json");
+        let mut saved: NotesSaved = fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let save = |saved: &NotesSaved| {
+            let _ = fs::create_dir_all(path.parent().unwrap());
+            let _ = fs::write(&path, serde_json::to_vec(saved).unwrap_or_default());
+        };
+        self.notes_state(|n| {
+            n.on = !saved.off;
+            n.last = saved
+                .stores
+                .get(&saved.current)
+                .map(|st| st.last)
+                .filter(|l| *l > 0);
+            n.conflicts.clone_from(&saved.conflicts);
+        });
+        let mut dir = notesync::Dir::new(notesync::notes_dir());
+        // The desktop's notes as last synced: unchanged, there is nothing to do.
+        let mut synced: Option<notesync::Manifest> = None;
+        loop {
+            let kicked = {
+                let (lock, wake) = &self.kick;
+                let flag = lock.lock().unwrap();
+                let (mut flag, _) = wake
+                    .wait_timeout_while(flag, Duration::from_secs(15), |k| !*k)
+                    .unwrap();
+                std::mem::take(&mut *flag)
+            };
+            if kicked {
+                // Saves come in bursts while typing: one sync for them all.
+                thread::sleep(Duration::from_millis(1500));
+                *self.kick.0.lock().unwrap() = false;
+            }
+            let on = self.state.lock().unwrap().notes.on;
+            if saved.off == on {
+                saved.off = !on;
+                save(&saved);
+            }
+            if !on || self.link.lock().unwrap().is_none() {
+                synced = None;
+                continue;
+            }
+            let dm = match dir.manifest() {
+                Ok(m) => m,
+                Err(e) => {
+                    self.notes_state(|n| n.error = Some(format!("{e:#}")));
+                    continue;
+                }
+            };
+            if !kicked && synced.as_ref() == Some(&dm) {
+                continue;
+            }
+            self.notes_state(|n| n.busy = true);
+            let result = self.sync_notes_once(&mut dir, &dm, &mut saved);
+            save(&saved);
+            synced = dir.manifest().ok();
+            self.notes_state(|n| {
+                n.busy = false;
+                n.error = result.err().map(|e| format!("{e:#}"));
+                n.last = saved
+                    .stores
+                    .get(&saved.current)
+                    .map(|st| st.last)
+                    .filter(|l| *l > 0);
+                n.conflicts.clone_from(&saved.conflicts);
+            });
+        }
+    }
+    fn sync_notes_once(
+        &self,
+        dir: &mut notesync::Dir,
+        dm: &notesync::Manifest,
+        saved: &mut NotesSaved,
+    ) -> Result<()> {
+        let listing = self.request("notes_list", json!({}))?;
+        let id = listing["store"].as_str().unwrap_or_default();
+        if id.is_empty()
+            || id.len() > 64
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            bail!("The phone's notes have no valid id");
+        }
+        let files = listing["files"].as_array().context("No notes listing")?;
+        if files.len() > notesync::MAX_FILES {
+            bail!(
+                "Over {} notes on the phone: too many to sync",
+                notesync::MAX_FILES
+            );
+        }
+        let mut pm = notesync::Manifest::new();
+        for f in files {
+            if let (Some(path), Some(hash)) = (f[0].as_str(), f[1].as_str())
+                && hash.len() == 64
+                && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                pm.insert(path.to_owned(), hash.to_ascii_lowercase());
+            }
+        }
+        let when = gtk::glib::DateTime::now_local()
+            .and_then(|d| d.format("%Y-%m-%d %H.%M"))
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let stamp = gtk::glib::real_time().to_string();
+        saved.current = id.to_owned();
+        // The stores of phones gone for good: a reinstall makes a new one.
+        while saved.stores.len() > 4 {
+            let Some(old) = saved
+                .stores
+                .iter()
+                .filter(|(k, _)| *k != id)
+                .min_by_key(|(_, v)| v.last)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            saved.stores.remove(&old);
+        }
+        let store = saved.stores.entry(id.to_owned()).or_default();
+        let out = notesync::sync(
+            dir,
+            &mut Remote(self),
+            dm,
+            pm,
+            &mut store.base,
+            &when,
+            &stamp,
+        );
+        for c in out.conflicts {
+            if !saved.conflicts.contains(&c) {
+                saved.conflicts.push(c);
+            }
+        }
+        saved.conflicts.retain(|c| dir.root.join(c).is_file());
+        match out.errors.first() {
+            None => {
+                if let Some(store) = saved.stores.get_mut(id) {
+                    store.last = now_ms();
+                }
+                Ok(())
+            }
+            Some(e) => bail!("{} changes wait for the next sync: {e}", out.errors.len()),
+        }
+    }
+
+    /// Sends each text the desktop copies to the phone. wl-paste follows the
+    /// clipboard without a window of ours; what password managers mark as
+    /// secret stays here. Each copy comes out ended by a NUL.
+    fn share_clipboard(&self) -> Result<()> {
+        const KEEP_SECRETS: &str = "if wl-paste --list-types | grep -q x-kde-passwordManagerHint; \
+            then cat >/dev/null; else cat; fi; printf '\\0'";
+        let mut command = Command::new("wl-paste");
+        command
+            .args(["--type", "text", "--watch", "sh", "-c", KEEP_SECRETS])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        use std::os::unix::process::CommandExt;
+        // It would outlive the daemon, watching for good. The signal comes when the
+        // thread that spawned it ends, not the process: this one's loop never does.
+        let parent = std::process::id() as libc::pid_t;
+        // SAFETY: only async-signal-safe calls, in the child before exec.
+        unsafe {
+            command.pre_exec(move || {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                // The daemon died before that took effect.
+                if libc::getppid() != parent {
+                    libc::raise(libc::SIGTERM);
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().context("wl-clipboard is not installed")?;
+        let mut out = BufReader::new(child.stdout.take().context("No wl-paste output")?);
+        let mut copied = Vec::new();
+        // A read error is the end of it too, wl-paste still running: stopped below.
+        while out.read_until(0, &mut copied).unwrap_or(0) > 0 {
+            if copied.last() == Some(&0) {
+                copied.pop();
+            }
+            let text = String::from_utf8_lossy(&copied).into_owned();
+            copied.clear();
+            if text.trim().is_empty() || text.len() > 1 << 20 {
+                continue;
+            }
+            let mut last = self.clip.lock().unwrap();
+            if *last == text {
+                continue;
+            }
+            last.clone_from(&text);
+            drop(last);
+            self.remember(&text, false);
+            if let Some(link) = self.link.lock().unwrap().clone() {
+                let _ = link.send(&json!({ "t": "clip", "text": text }));
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        bail!("wl-paste stopped")
+    }
+    /// Puts `text` first in the history; copied again, it keeps where it came from.
+    fn remember(&self, text: &str, phone: bool) {
+        let mut history = self.history.lock().unwrap();
+        let phone = match history.iter().position(|c| c.text == text) {
+            Some(i) => history.remove(i).phone || phone,
+            None => phone,
+        };
+        history.insert(
+            0,
+            Clip {
+                text: text.to_owned(),
+                time: gtk::glib::real_time() / 1000,
+                phone,
+            },
+        );
+        history.truncate(HISTORY);
+    }
+    pub fn clipboard(&self) -> Vec<Clip> {
+        self.history.lock().unwrap().clone()
+    }
+    /// What the phone copied, onto the desktop's clipboard.
+    fn copy(&self, text: &str) {
+        {
+            let mut last = self.clip.lock().unwrap();
+            if text.is_empty() || *last == text {
+                return;
+            }
+            *last = text.to_owned();
+        }
+        self.remember(text, true);
+        let Ok(mut child) = Command::new("wl-copy").stdin(Stdio::piped()).spawn() else {
+            return;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        // wl-copy forks to serve the clipboard and its first process returns.
+        let _ = child.wait();
     }
 
     fn bus(&self) -> Option<&zbus::blocking::Connection> {
@@ -544,11 +1099,6 @@ impl Phone {
     fn notify(&self, msg: &Value) {
         let key = msg["key"].as_str().unwrap_or_default().to_owned();
         let time = msg["time"].as_i64().unwrap_or_default();
-        let replaces = match self.shown.lock().unwrap().get(&key) {
-            Some((_, shown)) if *shown == time => return,
-            Some((id, _)) => *id,
-            None => 0,
-        };
         let pkg: String = msg["pkg"]
             .as_str()
             .unwrap_or_default()
@@ -568,6 +1118,25 @@ impl Phone {
             }
         }
         let text = |k: &str| msg[k].as_str().unwrap_or_default();
+        {
+            let mut state = self.state.lock().unwrap();
+            let list = &mut state.notifications;
+            list.retain(|n| n.key != key);
+            list.push(PhoneNotification {
+                key: key.clone(),
+                app: text("app").into(),
+                title: text("title").into(),
+                text: text("text").into(),
+                time,
+                icon: icon.clone(),
+            });
+            list.sort_by_key(|n| std::cmp::Reverse(n.time));
+        }
+        let replaces = match self.shown.lock().unwrap().get(&key) {
+            Some((_, shown)) if *shown == time => return,
+            Some((id, _)) => *id,
+            None => 0,
+        };
         let body = gtk::glib::markup_escape_text(text("text"));
         if let Some(id) = self.post(text("app"), &icon, text("title"), &body, replaces, true) {
             let mut shown = self.shown.lock().unwrap();
@@ -576,6 +1145,11 @@ impl Phone {
         }
     }
     fn close(&self, key: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .notifications
+            .retain(|n| n.key != key);
         let Some((id, _)) = ({
             let mut shown = self.shown.lock().unwrap();
             let removed = shown.remove(key);
@@ -584,6 +1158,9 @@ impl Phone {
         }) else {
             return;
         };
+        if id == 0 {
+            return;
+        }
         if let Some(bus) = self.bus() {
             let _ = bus.call_method(
                 Some("org.freedesktop.Notifications"),
@@ -593,6 +1170,26 @@ impl Phone {
                 &(id,),
             );
         }
+    }
+    /// A new notification server numbers its notifications afresh: the ids
+    /// kept would name others, and closing those would dismiss phone ones.
+    fn follow_restarts(&self) -> Result<()> {
+        let bus = zbus::blocking::Connection::session()?;
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender("org.freedesktop.DBus")?
+            .interface("org.freedesktop.DBus")?
+            .member("NameOwnerChanged")?
+            .add_arg("org.freedesktop.Notifications")?
+            .build();
+        for msg in zbus::blocking::MessageIterator::for_match_rule(rule, &bus, None)? {
+            msg?;
+            let mut shown = self.shown.lock().unwrap();
+            // Still known as shown, so not posted again, but by no id.
+            shown.values_mut().for_each(|v| v.0 = 0);
+            save_seen(&shown);
+        }
+        Ok(())
     }
     /// A phone notification the user dismisses on the desktop goes on the phone too.
     fn follow_dismissals(self: &Arc<Self>) -> Result<()> {
@@ -633,13 +1230,247 @@ impl Phone {
     }
 }
 
+/// The phone's notes, through the link.
+struct Remote<'a>(&'a Phone);
+impl Side for Remote<'_> {
+    fn read(&mut self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let r = self.0.request(
+            "notes_read",
+            json!({ "path": path, "offset": offset, "len": len }),
+        )?;
+        let bytes = gtk::glib::base64_decode(r["b64"].as_str().unwrap_or_default());
+        if bytes.len() > len {
+            bail!("The phone sent more than asked");
+        }
+        Ok(bytes)
+    }
+    fn write(&mut self, path: &str, offset: u64, bytes: &[u8]) -> Result<()> {
+        let b64 = gtk::glib::base64_encode(bytes);
+        self.0.request(
+            "notes_write",
+            json!({ "path": path, "offset": offset, "b64": b64.as_str() }),
+        )?;
+        Ok(())
+    }
+    fn commit(&mut self, path: &str, hash: &str, expect: Option<&str>) -> Result<()> {
+        self.0.request(
+            "notes_commit",
+            json!({ "path": path, "hash": hash, "expect": expect.unwrap_or_default() }),
+        )?;
+        Ok(())
+    }
+    fn trash(&mut self, path: &str, expect: &str, stamp: &str) -> Result<()> {
+        self.0.request(
+            "notes_trash",
+            json!({ "path": path, "expect": expect, "stamp": stamp }),
+        )?;
+        Ok(())
+    }
+    fn rename(&mut self, from: &str, to: &str, expect: &str) -> Result<()> {
+        self.0.request(
+            "notes_move",
+            json!({ "path": from, "to": to, "expect": expect }),
+        )?;
+        Ok(())
+    }
+}
+
+/// MMS: attachments go to the phone in chunks, then out as one message; the
+/// parts of received ones come back the same way, into the cache.
+const MMS_FILES: usize = 10;
+const MMS_FILE_MAX: u64 = 20 << 20;
+const MMS_PART_MAX: u64 = 50 << 20;
+const MMS_CHUNK: u64 = 512 << 10;
+/// Letters, digits, `.`, `-` and `_` alone, so that a name is never a path.
+fn safe_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
+            _ => '_',
+        })
+        .collect::<String>()
+        .trim_start_matches('.')
+        .chars()
+        .take(80)
+        .collect();
+    if clean.is_empty() {
+        "attachment".into()
+    } else {
+        clean
+    }
+}
+// ponytail: never pruned; a size cap if received media ever adds up.
+fn mms_cache() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+        })
+        .join("nexus/messages")
+}
+impl Phone {
+    /// Sends `body` and `files` to `to` as one MMS: the phone gets each file in
+    /// chunks, then builds and sends the message.
+    pub fn send_mms(&self, to: &str, body: &str, files: &[PathBuf]) -> Result<Value> {
+        if files.is_empty() || files.len() > MMS_FILES {
+            bail!("Attach 1 to {MMS_FILES} files");
+        }
+        let mut parts = Vec::new();
+        for (i, path) in files.iter().enumerate() {
+            let shown = path.file_name().unwrap_or_default().to_string_lossy();
+            let mut f = fs::File::open(path).with_context(|| format!("Can't read {shown}"))?;
+            if f.metadata()?.len() > MMS_FILE_MAX {
+                bail!("{shown} is over {} MB", MMS_FILE_MAX >> 20);
+            }
+            let name = format!("{i}-{}", safe_name(&shown));
+            let mut offset = 0u64;
+            loop {
+                let mut chunk = Vec::new();
+                (&mut f).take(MMS_CHUNK).read_to_end(&mut chunk)?;
+                let b64 = gtk::glib::base64_encode(&chunk);
+                self.request(
+                    "mms_put",
+                    json!({ "name": name, "offset": offset, "b64": b64.as_str() }),
+                )?;
+                offset += chunk.len() as u64;
+                if (chunk.len() as u64) < MMS_CHUNK {
+                    break;
+                }
+            }
+            let mime = gtk::gio::content_type_guess(Some(path), None).0;
+            let mime = gtk::gio::content_type_get_mime_type(&mime)
+                .map_or_else(|| "application/octet-stream".into(), |m| m.to_string());
+            parts.push(json!({ "name": name, "mime": mime }));
+        }
+        #[cfg(feature = "lab")]
+        if let Some(wait) = fake().and_then(|f| f["replies"]["mms_send"]["wait"].as_f64()) {
+            thread::sleep(Duration::from_secs_f64(wait.min(30.)));
+        }
+        self.request(
+            "mms_send",
+            json!({ "to": to, "body": body, "parts": parts }),
+        )
+    }
+    /// The received attachment `part`, copied from the phone once and kept.
+    pub fn mms_part(&self, part: i64, name: &str) -> Result<PathBuf> {
+        let dir = mms_cache().join(part.to_string());
+        let path = dir.join(safe_name(name));
+        if path.exists() {
+            return Ok(path);
+        }
+        fs::create_dir_all(&dir)?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let tmp = dir.join(format!(".{id}.part"));
+        let result = (|| -> Result<()> {
+            #[cfg(feature = "lab")]
+            if let Some(f) = fake() {
+                let src = f["replies"]["mms_read"]["files"][part.to_string()].as_str();
+                fs::copy(src.context("No such attachment")?, &tmp)?;
+                return Ok(());
+            }
+            let mut f = fs::File::create(&tmp)?;
+            let mut offset = 0u64;
+            loop {
+                let r = self.request(
+                    "mms_read",
+                    json!({ "part": part, "offset": offset, "len": CHUNK }),
+                )?;
+                let bytes = gtk::glib::base64_decode(r["b64"].as_str().unwrap_or_default());
+                f.write_all(&bytes)?;
+                offset += bytes.len() as u64;
+                if offset > MMS_PART_MAX {
+                    bail!("The attachment is over {} MB", MMS_PART_MAX >> 20);
+                }
+                if r["eof"] != false || bytes.is_empty() {
+                    return Ok(());
+                }
+            }
+        })();
+        match result.and_then(|()| Ok(fs::rename(&tmp, &path)?)) {
+            Ok(()) => Ok(path),
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                Err(e)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mms_names_stay_in_their_folder() {
+        use super::safe_name;
+        assert_eq!(safe_name("../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(safe_name("Photo 1.jpg"), "Photo_1.jpg");
+        assert_eq!(safe_name(""), "attachment");
+        assert_eq!(safe_name(".."), "attachment");
+    }
     #[test]
     fn token_comparison() {
         assert!(super::same("abc", "abc"));
         assert!(!super::same("abc", "abd"));
         assert!(!super::same("abc", "abcd"));
+    }
+    #[test]
+    fn hello_lines_are_bounded() {
+        use super::{MAX_HELLO, read_line};
+        let fits = format!("{}\n", "x".repeat(MAX_HELLO as usize - 1));
+        let mut r = std::io::Cursor::new(fits.as_bytes());
+        assert_eq!(read_line(&mut r, MAX_HELLO).unwrap().unwrap(), fits);
+        let over = format!("{}\n", "x".repeat(MAX_HELLO as usize));
+        assert!(read_line(&mut std::io::Cursor::new(over.as_bytes()), MAX_HELLO).is_err());
+        assert!(
+            read_line(&mut std::io::Cursor::new(b""), MAX_HELLO)
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn greeting_connections_are_capped() {
+        use std::sync::atomic::Ordering;
+        let phone = super::Phone::default();
+        for _ in 0..super::MAX_GREETING {
+            assert!(phone.admit());
+        }
+        assert!(!phone.admit());
+        phone.greeting.fetch_sub(1, Ordering::Relaxed);
+        assert!(phone.admit());
+    }
+    #[test]
+    fn an_oversized_hello_is_dropped_and_frees_its_slot() {
+        use std::{io::Write, sync::atomic::Ordering};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let phone = std::sync::Arc::new(super::Phone::default());
+        assert!(phone.admit());
+        client
+            .write_all(&[b'x'; super::MAX_HELLO as usize + 1])
+            .unwrap();
+        // Returns without waiting for the rest of the line, or for a timeout.
+        phone.serve(stream);
+        assert_eq!(phone.greeting.load(Ordering::Relaxed), 0);
+    }
+    #[test]
+    fn pulled_files_never_replace_local_ones() {
+        let dir = std::env::temp_dir().join(format!("nexus-pull-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "mine").unwrap();
+        let claim = |name| {
+            let path = super::claim_name(&dir, name).unwrap();
+            path.file_name().unwrap().to_str().unwrap().to_owned()
+        };
+        assert_eq!(claim("a.txt"), "a (1).txt");
+        assert_eq!(claim("a.txt"), "a (2).txt");
+        assert_eq!(claim("b.txt"), "b.txt");
+        assert_eq!(claim("noext"), "noext");
+        assert_eq!(claim("noext"), "noext (1)");
+        assert_eq!(claim(".hidden"), ".hidden");
+        assert_eq!(claim(".hidden"), ".hidden (1)");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "mine");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn lockers() {

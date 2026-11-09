@@ -1,5 +1,5 @@
 use super::super::{hbox, label, vbox};
-use gtk::{gio, glib, prelude::*};
+use gtk::{glib, prelude::*};
 use nexus_control::{
     Request,
     launcher::{self, Application, Catalogue},
@@ -22,27 +22,19 @@ impl Launcher {
     pub fn new(catalogue: Catalogue, close: Rc<dyn Fn()>) -> Self {
         let root = vbox(0);
         root.add_css_class("launcher");
-        root.set_width_request(600);
+        root.set_width_request(640);
         let search_row = hbox(14);
         search_row.add_css_class("search-row");
         let icon = gtk::Image::from_icon_name("system-search-symbolic");
-        icon.set_pixel_size(21);
+        icon.set_pixel_size(20);
         search_row.append(&icon);
         let search = gtk::Entry::new();
-        search.set_placeholder_text(Some("Search apps"));
+        search.set_placeholder_text(Some("Search"));
         search.set_hexpand(true);
         search.add_css_class("launcher-search");
         search_row.append(&search);
-        search_row.append(&label("esc", "keycap"));
         root.append(&search_row);
-        let heading = hbox(8);
-        heading.add_css_class("results-heading");
-        let title = label("APPLICATIONS", "eyebrow");
-        title.set_hexpand(true);
-        heading.append(&title);
-        let count = label("", "muted");
-        heading.append(&count);
-        root.append(&heading);
+        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let results = gtk::ListBox::new();
         results.add_css_class("app-results");
         results.set_selection_mode(gtk::SelectionMode::Single);
@@ -56,16 +48,34 @@ impl Launcher {
         empty.append(&empty_hint);
         empty.set_visible(false);
         root.append(&empty);
-        let footer = hbox(12);
-        footer.add_css_class("launcher-footer");
-        let hint = label("Type to search", "muted");
-        hint.set_hexpand(true);
-        footer.append(&hint);
-        footer.append(&label("↑ ↓ / Ctrl N P     ↵  open", "muted"));
-        root.append(&footer);
         let error = label("", "error");
         error.set_visible(false);
         root.append(&error);
+        // Where the pointer was last seen over the results. Only moving from there
+        // moves the selection: not resting where the launcher opens, nor rows
+        // changing under a still pointer.
+        let pointer = Rc::new(Cell::new(None::<(f64, f64)>));
+        let motion = gtk::EventControllerMotion::new();
+        let (seen, list) = (pointer.clone(), results.clone());
+        motion.connect_motion(move |motion, _, y| {
+            // On the surface: the panel slides as it opens, moving the list under a
+            // still pointer, and the compositor reports that same position again.
+            let Some(at) = motion.current_event().and_then(|event| event.position()) else {
+                return;
+            };
+            if seen.replace(Some(at)).is_some_and(|was| was != at)
+                && let Some(row) = list.row_at_y(y as i32)
+            {
+                list.select_row(Some(&row));
+            }
+        });
+        results.add_controller(motion);
+        // Opening again on an empty search changes no text, so refreshes nothing.
+        let on_close = error.clone();
+        root.connect_unmap(move |_| {
+            on_close.set_visible(false);
+            pointer.set(None);
+        });
         let catalogue = Rc::new(RefCell::new(catalogue));
         // Rows and their icon paintables are prepared once while the shell starts.
         // Opening or searching only reparents the already cached widgets.
@@ -84,9 +94,9 @@ impl Launcher {
             let rows = rows.clone();
             let indices = indices.clone();
             let empty = empty.clone();
-            let count = count.clone();
-            let title = title.clone();
+            let error = error.clone();
             Rc::new(move |query| {
+                error.set_visible(false);
                 let cache = catalogue.borrow();
                 let ranked = launcher::ranked(&cache.applications, &cache.history, query);
                 // Cached rows keep their selected flag when removed; GtkListBox then refuses
@@ -103,16 +113,6 @@ impl Launcher {
                     "No matches"
                 });
                 empty_hint.set_visible(!loading);
-                title.set_text(if query.trim().is_empty() {
-                    "APPLICATIONS"
-                } else {
-                    "RESULTS"
-                });
-                count.set_text(&if query.trim().is_empty() {
-                    cache.applications.len().to_string()
-                } else {
-                    ranked.len().to_string()
-                });
                 for i in &ranked {
                     results.append(&rows.borrow()[*i]);
                 }
@@ -192,7 +192,6 @@ impl Launcher {
         let key = gtk::EventControllerKey::new();
         key.set_propagation_phase(gtk::PropagationPhase::Capture);
         let list = results.clone();
-        let entry = search.clone();
         key.connect_key_pressed(move |_, key, _, modifiers| {
             if matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter) {
                 if let Some(row) = list.selected_row() {
@@ -214,18 +213,7 @@ impl Launcher {
                 };
                 if let Some(row) = list.row_at_index(next) {
                     list.select_row(Some(&row));
-                    row.grab_focus();
                 }
-                return glib::Propagation::Stop;
-            }
-            if !ctrl
-                && !modifiers.contains(gtk::gdk::ModifierType::ALT_MASK)
-                && list.focus_child().is_some()
-                && let Some(ch) = key.to_unicode().filter(|c| !c.is_control())
-            {
-                entry.set_text(&format!("{}{ch}", entry.text()));
-                entry.grab_focus();
-                entry.set_position(-1);
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -239,28 +227,19 @@ impl Launcher {
     }
 }
 fn app_row(app: &Application) -> gtk::ListBoxRow {
-    const ICON: i32 = 36;
+    const ICON: i32 = 32;
     let row = gtk::ListBoxRow::new();
     let b = hbox(14);
     b.add_css_class("app-row");
-    let icon = app
+    let display = gtk::gdk::Display::default().unwrap();
+    match app
         .icon
         .as_deref()
-        .and_then(|i| gio::Icon::for_string(i).ok())
-        .map(|i| {
-            let theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap());
-            let paint = theme.lookup_by_gicon(
-                &i,
-                ICON,
-                2,
-                gtk::TextDirection::None,
-                gtk::IconLookupFlags::PRELOAD,
-            );
-            gtk::Image::from_paintable(Some(&paint))
-        })
-        .unwrap_or_else(|| gtk::Image::from_icon_name("application-x-executable-symbolic"));
-    icon.set_pixel_size(ICON);
-    b.append(&icon);
+        .and_then(|i| super::dock::app_image(&display, i, ICON, 2))
+    {
+        Some(icon) => b.append(&icon),
+        None => b.append(&super::dock::letter(&app.name, "app-letter")),
+    }
     let text = vbox(2);
     text.set_hexpand(true);
     text.set_valign(gtk::Align::Center);
@@ -278,7 +257,6 @@ fn app_row(app: &Application) -> gtk::ListBoxRow {
         text.append(&description);
     }
     b.append(&text);
-    b.append(&label("↵", "launch-arrow"));
     row.set_child(Some(&b));
     row
 }

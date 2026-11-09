@@ -66,7 +66,7 @@ struct Data {
     messages: Vec<String>,
 }
 /// Overwrites a secret before its memory is released.
-fn wipe(bytes: &mut [u8]) {
+pub fn wipe(bytes: &mut [u8]) {
     for b in bytes.iter_mut() {
         // SAFETY: a valid, exclusive reference; volatile so the write is kept.
         unsafe { ptr::write_volatile(b, 0) };

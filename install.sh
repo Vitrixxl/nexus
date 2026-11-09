@@ -16,7 +16,7 @@ case "${1:-}" in
 esac
 install -d "$prefix/bin" "$prefix/share/applications" "$prefix/share/nexus" "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # Atomic replacement works while the old process is running.
-for bin in nexus nexusd nexus-files; do
+for bin in nexus nexusd nexus-files nexus-notes; do
     install -m755 "$root/target/release/$bin" "$prefix/bin/$bin.new"
     if [ ! -f /usr/lib/libgtk4-layer-shell.so ] && [ -f "$HOME/.local/share/nexus-runtime/usr/lib/libgtk4-layer-shell.so" ] && command -v patchelf >/dev/null; then
         patchelf --set-rpath '$ORIGIN/../share/nexus-runtime/usr/lib' "$prefix/bin/$bin.new"
@@ -42,6 +42,9 @@ fi
 # Nexus Files: default file manager, FileManager1 ("Show in folder") and the
 # FileChooser portal backend, all D-Bus activated into one resident process.
 install -m644 "$root/packaging/nexus-files.desktop" "$prefix/share/applications/nexus-files.desktop"
+install -m644 "$root/packaging/nexus-messages.desktop" "$prefix/share/applications/nexus-messages.desktop"
+install -m644 "$root/packaging/nexus-notes.desktop" "$prefix/share/applications/nexus-notes.desktop"
+install -m644 "$root/packaging/nexus-call.desktop" "$prefix/share/applications/nexus-call.desktop"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 install -d "$data/dbus-1/services" "$data/xdg-desktop-portal/portals"
 for service in org.freedesktop.FileManager1 org.freedesktop.impl.portal.desktop.nexus io.github.vitrixxl.NexusFiles; do
@@ -70,8 +73,17 @@ fi
 if [ -n "$portal_changed" ] && command -v systemctl >/dev/null; then
     systemctl --user try-restart xdg-desktop-portal.service 2>/dev/null || true
 fi
-if command -v xdg-mime >/dev/null; then xdg-mime default nexus-files.desktop inode/directory; fi
+if command -v xdg-mime >/dev/null; then
+    xdg-mime default nexus-files.desktop inode/directory
+    xdg-mime default nexus-call.desktop x-scheme-handler/tel
+fi
 "$prefix/bin/nexus" init-theme
+# What the phone updates itself from: rebuilt when its sources changed.
+apk="$data/nexus/nexus-phone.apk"
+if [ -d "${ANDROID_HOME:-$HOME/Android/Sdk}" ] && { [ ! -f "$apk" ] ||
+    [ -n "$(find "$root/android" -path "$root/android/build" -prune -o -type f -newer "$apk" -print -quit)" ]; }; then
+    "$root/android/build.sh" >/dev/null || printf 'The phone app could not be rebuilt.\n' >&2
+fi
 if command -v update-desktop-database >/dev/null; then update-desktop-database "$prefix/share/applications"; fi
 printf 'Installed Nexus in %s. Start with nexus-session (or nexusd and nexus).\n' "$prefix"
 printf 'Optional power policy: sudo install -Dm644 %q /etc/polkit-1/rules.d/49-nexus-power.rules\n' "$prefix/share/nexus/49-nexus-power.rules"

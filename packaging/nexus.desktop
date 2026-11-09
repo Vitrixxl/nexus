@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=Nexus
-Comment=Wi-Fi, Bluetooth, sound and appearance
-Exec=nexus wifi
+Comment=Appearance, phone, monitor and packages
+Exec=nexus control
 Icon=preferences-system-symbolic
 Terminal=false
 Categories=Settings;System;

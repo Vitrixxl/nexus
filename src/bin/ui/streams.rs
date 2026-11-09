@@ -23,7 +23,8 @@ pub struct StreamList {
 }
 fn app_icon(name: Option<&str>) -> String {
     let theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap());
-    name.filter(|n| theme.has_icon(n))
+    // SDL names this icon for any program that sets none: a gamepad on a video editor.
+    name.filter(|n| *n != "applications-games" && theme.has_icon(n))
         .unwrap_or("audio-x-generic-symbolic")
         .to_string()
 }
@@ -36,12 +37,12 @@ fn mute_icon(muted: bool) -> &'static str {
 }
 impl StreamList {
     pub fn new() -> Self {
-        let widget = vbox(12);
-        widget.add_css_class("card");
-        widget.append(&label("Applications", "row-title"));
-        let list = vbox(14);
+        let widget = vbox(0);
+        let list = vbox(4);
         widget.append(&list);
-        let empty = caption("No application is playing sound.");
+        let empty = label("Nothing is playing", "quick-detail");
+        empty.add_css_class("quick-empty");
+        empty.set_xalign(0.5);
         widget.append(&empty);
         Self {
             widget,
@@ -51,10 +52,11 @@ impl StreamList {
         }
     }
     fn row(ui: &Ui, stream: &AppStream) -> Row {
-        let widget = vbox(4);
-        let top = hbox(12);
+        let widget = vbox(0);
+        widget.add_css_class("quick-stream");
+        let top = hbox(10);
         let icon = gtk::Image::new();
-        icon.set_pixel_size(24);
+        icon.set_pixel_size(20);
         top.append(&icon);
         let text = vbox(1);
         text.set_hexpand(true);
@@ -74,6 +76,7 @@ impl StreamList {
         mute.add_css_class("flat");
         mute.add_css_class("stream-mute");
         mute.set_valign(gtk::Align::Center);
+        mute.set_focus_on_click(false);
         let id = stream.id.to_string();
         let ui2 = ui.clone();
         let target = id.clone();
@@ -91,7 +94,7 @@ impl StreamList {
         top.append(&mute);
         widget.append(&top);
         let scale = slider(ui, "stream-volume", &id);
-        scale.set_margin_start(36);
+        scale.set_margin_start(30);
         widget.append(&scale);
         Row {
             id: stream.id,

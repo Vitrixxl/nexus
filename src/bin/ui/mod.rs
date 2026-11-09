@@ -1,9 +1,17 @@
 pub mod battery;
+pub mod call;
+pub mod clipboard;
 pub mod control;
+pub mod dock;
 pub mod launcher;
+pub mod messages;
+pub mod mirror;
 pub mod monitor;
 pub mod notifications;
+pub mod osd;
+pub mod packages;
 pub mod phone;
+pub mod quick;
 pub mod shell;
 pub mod slide;
 pub mod streams;
