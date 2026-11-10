@@ -113,13 +113,13 @@ pub fn valid_name(name: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "@._+-".contains(c))
 }
-/// The commands this page can run. There is no path to a partial upgrade.
+/// The commands this page can run.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
+    /// What plain `yay` does, spelled out: flags alone would not imply it.
     UpdateAll,
-    /// The same without the AUR, for when it cannot be asked what would be built:
-    /// yay could then build what nobody reviewed.
-    UpdateOfficial,
+    /// One package, `-S` on its own: a partial upgrade, deliberately.
+    Update(String),
     /// From a named repository, so that what was reviewed is what gets built
     /// when the AUR and a repository share a name.
     Install {
@@ -132,13 +132,14 @@ impl Change {
     /// The command for `manager`, `yay` or `pacman`; an error for a bad name.
     pub fn command(&self, manager: &str) -> Result<Vec<String>, String> {
         let refused = |name: &str| Err(format!("Refused the package name “{name}”."));
-        let manager = if *self == Change::UpdateOfficial {
-            "pacman"
-        } else {
-            manager
-        };
         let mut args: Vec<String> = match self {
-            Change::UpdateAll | Change::UpdateOfficial => vec!["-Syu".into()],
+            Change::UpdateAll => vec!["-Syu".into()],
+            Change::Update(name) => {
+                if !valid_name(name) {
+                    return refused(name);
+                }
+                vec!["-S".into(), name.clone()]
+            }
             Change::Install { repo, name } => {
                 if !valid_name(name) {
                     return refused(name);
@@ -1174,15 +1175,28 @@ esac
             assert!(install("extra", bad).command("pacman").is_err());
             assert!(install(bad, "foot").command("yay").is_err());
             assert!(Change::Remove(bad.into()).command("yay").is_err());
+            assert!(Change::Update(bad.into()).command("yay").is_err());
         }
     }
     #[test]
-    fn commands_only_upgrade_fully_and_never_ask() {
-        let update = Change::UpdateAll.command("yay").unwrap();
-        assert_eq!(update[..2], ["yay", "-Syu"]);
-        for flag in ["--noconfirm", "--sudoloop", "--answerdiff"] {
-            assert!(update.iter().any(|a| a == flag), "{flag}");
+    fn commands_update_through_the_manager_and_never_ask() {
+        let all = Change::UpdateAll.command("yay").unwrap();
+        assert_eq!(all[..2], ["yay", "-Syu"]);
+        let one = Change::Update("foot".into()).command("yay").unwrap();
+        assert_eq!(one[..3], ["yay", "-S", "foot"]);
+        for update in [&all, &one] {
+            for flag in ["--noconfirm", "--sudoloop", "--answerdiff", "--color"] {
+                assert!(update.iter().any(|a| a == flag), "{flag}");
+            }
         }
+        assert_eq!(
+            Change::UpdateAll.command("pacman").unwrap()[..3],
+            ["sudo", "pacman", "-Syu"]
+        );
+        let one = Change::Update("foot".into()).command("pacman").unwrap();
+        assert_eq!(one[..4], ["sudo", "pacman", "-S", "foot"]);
+        assert!(one.iter().any(|a| a == "--noconfirm"));
+        assert!(!one.iter().any(|a| a == "--sudoloop"));
         let install = Change::Install {
             repo: "extra".into(),
             name: "foot".into(),
@@ -1193,10 +1207,6 @@ esac
             Change::Remove("foot".into()).command("pacman").unwrap()[..4],
             ["sudo", "pacman", "-Rns", "foot"]
         );
-        // Whatever the manager: yay could build what was not reviewed.
-        let official = Change::UpdateOfficial.command("yay").unwrap();
-        assert_eq!(official[..3], ["sudo", "pacman", "-Syu"]);
-        assert!(!official.iter().any(|a| a == "--sudoloop"));
     }
     #[test]
     fn the_password_is_scrubbed() {

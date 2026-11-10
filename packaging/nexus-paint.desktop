@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Paint
+GenericName=Whiteboard
+Comment=An infinite whiteboard for shapes, drawings and text
+Exec=nexus paint
+Icon=applications-graphics
+Terminal=false
+StartupNotify=true
+Categories=Graphics;
+Keywords=paint;draw;whiteboard;sketch;
+StartupWMClass=io.github.vitrixxl.NexusPaint

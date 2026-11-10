@@ -306,8 +306,6 @@ enum View {
 /// What was found out before a change starts.
 enum Prepared {
     Go,
-    /// The AUR cannot be asked: the update goes ahead without it.
-    Official,
     /// The build scripts to read first, by package.
     Review(Vec<(String, String)>),
     /// What a removal takes along.
@@ -331,16 +329,15 @@ fn words(change: &Change, count: usize) -> Words {
             } else {
                 "Updating the system".into()
             },
-            review: "Review AUR updates".into(),
-            confirm: "Build and Update",
             done: "System updated".into(),
             failed: "Update failed".into(),
             stopped: "Update cancelled",
+            ..Words::default()
         },
-        Change::UpdateOfficial => Words {
-            doing: "Updating official packages".into(),
-            done: "Official packages updated".into(),
-            failed: "Update failed".into(),
+        Change::Update(name) => Words {
+            doing: format!("Updating {name}"),
+            done: format!("{name} updated"),
+            failed: format!("Could not update {name}"),
             stopped: "Update cancelled",
             ..Words::default()
         },
@@ -716,8 +713,7 @@ impl Packages {
         status_row.append(&status);
         browse.append(&status_row);
         let aur_note = label(
-            "Could not check the AUR, so its updates are not listed. Updating now covers \
-             official packages only.",
+            "Could not check the AUR, so its updates are not listed.",
             "banner",
         );
         aur_note.set_visible(false);
@@ -1022,10 +1018,10 @@ impl Packages {
             *self.update_names.borrow_mut() = matching.iter().map(|p| p.name.clone()).collect();
             // The lists may be old, so there is always a way to sync them.
             self.update_all.set_sensitive(true);
-            self.update_all.set_label(match (count > 0, aur_failed) {
-                (false, _) => "Sync and Update",
-                (true, false) => "Update All",
-                (true, true) => "Update Official",
+            self.update_all.set_label(if count > 0 {
+                "Update All"
+            } else {
+                "Sync and Update"
             });
             if count > 0 {
                 self.update_all.add_css_class("suggested-action");
@@ -1093,54 +1089,41 @@ impl Packages {
             text.append(&about);
         }
         row.append(&text);
-        // Updates are done together; a partial upgrade is not supported on Arch.
-        if view != View::Updates {
-            let title = match (package.installed, aur) {
-                (true, _) => "Remove…",
-                (false, true) => "Install…",
-                (false, false) => "Install",
-            };
-            let b = gtk::Button::with_label(title);
-            b.set_valign(gtk::Align::Center);
-            let package = package.clone();
-            self.on_click(&b, move |s| {
-                let name = package.name.clone();
-                s.begin(if package.installed {
-                    Change::Remove(name)
-                } else {
-                    Change::Install {
-                        repo: package.repo.clone(),
-                        name,
-                    }
-                });
+        let title = match (view, package.installed, aur) {
+            (View::Updates, ..) => "Update",
+            (_, true, _) => "Remove…",
+            (_, false, true) => "Install…",
+            (_, false, false) => "Install",
+        };
+        let b = gtk::Button::with_label(title);
+        b.set_valign(gtk::Align::Center);
+        let package = package.clone();
+        self.on_click(&b, move |s| {
+            let name = package.name.clone();
+            s.begin(if view == View::Updates {
+                Change::Update(name)
+            } else if package.installed {
+                Change::Remove(name)
+            } else {
+                Change::Install {
+                    repo: package.repo.clone(),
+                    name,
+                }
             });
-            row.append(&b);
-        }
+        });
+        row.append(&b);
         row
     }
     /// A change from the start: nothing runs before what it needs is found and shown.
     fn begin(&self, change: Change) {
         match change.clone() {
-            Change::UpdateAll | Change::UpdateOfficial => {
-                self.prepare(Change::UpdateAll, || {
-                    let Ok(aur) = aur_updates() else {
-                        return Ok(Prepared::Official);
-                    };
-                    let names: Vec<String> = aur.into_iter().map(|p| p.name).collect();
-                    if names.is_empty() {
-                        Ok(Prepared::Go)
-                    } else {
-                        review(names).map(Prepared::Review)
-                    }
-                });
-            }
             Change::Remove(name) => {
                 self.prepare(change, move || removal(&name).map(Prepared::Remove));
             }
             Change::Install { repo, name } if repo == "aur" => {
                 self.prepare(change, move || review(vec![name]).map(Prepared::Review));
             }
-            Change::Install { .. } => self.prepare(change, || Ok(Prepared::Go)),
+            _ => self.prepare(change, || Ok(Prepared::Go)),
         }
     }
     /// Opens the change's view and finds out what it needs before it can start.
@@ -1174,11 +1157,6 @@ impl Packages {
             }
             match result {
                 Ok(Prepared::Go) => s.start(),
-                Ok(Prepared::Official) => {
-                    *s.words.borrow_mut() = words(&Change::UpdateOfficial, 0);
-                    *s.change.borrow_mut() = Some(Change::UpdateOfficial);
-                    s.start();
-                }
                 Ok(Prepared::Review(scripts)) => s.show_review(scripts),
                 Ok(Prepared::Remove(also)) => s.show_removal(&also),
                 Err(e) => s.show_failure(&e),

@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod backend;
+pub mod calendar;
 pub mod launcher;
 pub mod monitor;
 pub mod night;
@@ -10,6 +11,7 @@ pub mod phone_client;
 pub mod power;
 pub mod theme;
 pub mod tray;
+pub mod vault;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -150,8 +152,8 @@ pub enum Request {
     Theme {
         settings: theme::Settings,
     },
-    /// A request for the paired phone; `pull`, `push`, `disconnect`, `clipboard` and
-    /// `notes_sync` are the daemon's own.
+    /// A request for the paired phone; `pull`, `push`, `disconnect`, `clipboard`,
+    /// `notes_sync` and `calendar*` are the daemon's own.
     Phone {
         op: String,
         #[serde(default)]

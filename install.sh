@@ -16,7 +16,7 @@ case "${1:-}" in
 esac
 install -d "$prefix/bin" "$prefix/share/applications" "$prefix/share/nexus" "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # Atomic replacement works while the old process is running.
-for bin in nexus nexusd nexus-files nexus-notes; do
+for bin in nexus nexusd nexus-files nexus-notes nexus-vaultd nexus-vault-host; do
     install -m755 "$root/target/release/$bin" "$prefix/bin/$bin.new"
     if [ ! -f /usr/lib/libgtk4-layer-shell.so ] && [ -f "$HOME/.local/share/nexus-runtime/usr/lib/libgtk4-layer-shell.so" ] && command -v patchelf >/dev/null; then
         patchelf --set-rpath '$ORIGIN/../share/nexus-runtime/usr/lib' "$prefix/bin/$bin.new"
@@ -45,6 +45,14 @@ install -m644 "$root/packaging/nexus-files.desktop" "$prefix/share/applications/
 install -m644 "$root/packaging/nexus-messages.desktop" "$prefix/share/applications/nexus-messages.desktop"
 install -m644 "$root/packaging/nexus-notes.desktop" "$prefix/share/applications/nexus-notes.desktop"
 install -m644 "$root/packaging/nexus-call.desktop" "$prefix/share/applications/nexus-call.desktop"
+install -m644 "$root/packaging/nexus-passwords.desktop" "$prefix/share/applications/nexus-passwords.desktop"
+install -m644 "$root/packaging/nexus-paint.desktop" "$prefix/share/applications/nexus-paint.desktop"
+# The browser extension reaches the vault through this host, named by absolute path.
+for browser in BraveSoftware/Brave-Browser chromium; do
+    native="${XDG_CONFIG_HOME:-$HOME/.config}/$browser/NativeMessagingHosts"
+    install -d "$native"
+    sed "s|@HOST@|$prefix/bin/nexus-vault-host|" "$root/extension/native-host.json.in" > "$native/io.github.vitrixxl.nexus.json"
+done
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 install -d "$data/dbus-1/services" "$data/xdg-desktop-portal/portals"
 for service in org.freedesktop.FileManager1 org.freedesktop.impl.portal.desktop.nexus io.github.vitrixxl.NexusFiles; do

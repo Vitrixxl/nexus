@@ -1,0 +1,7 @@
+{
+  "name": "io.github.vitrixxl.nexus",
+  "description": "Nexus Passwords relay to nexus-vaultd",
+  "path": "@HOST@",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://mambiildefihcdgmhldfgdaklggdlpia/"]
+}

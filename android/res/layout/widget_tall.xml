@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@drawable/widget_bg"
+    android:clipToOutline="true" android:paddingStart="14dp" android:paddingEnd="14dp"
+    android:paddingTop="14dp" android:paddingBottom="12dp">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="32dp"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <TextView android:id="@+id/w_month" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:paddingStart="6dp" android:text="November" android:textSize="17sp"
+            android:textColor="@color/widget_fg" android:fontFamily="sans-serif-medium" android:maxLines="1" />
+        <ImageView android:id="@+id/w_add" android:layout_width="32dp" android:layout_height="32dp"
+            android:background="@drawable/widget_add" android:padding="7dp" android:src="@drawable/ic_add"
+            android:tint="@color/widget_fg" android:contentDescription="Add an event" />
+    </LinearLayout>
+    <LinearLayout android:id="@+id/w_grid" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:layout_marginTop="4dp" />
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <LinearLayout android:id="@+id/w_list" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:orientation="vertical" android:gravity="center_vertical" android:paddingStart="6dp" android:paddingEnd="6dp" />
+        <TextView android:id="@+id/w_empty" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:gravity="center" android:text="Nothing coming up" android:textSize="14sp"
+            android:textColor="@color/widget_muted" android:visibility="gone" />
+    </FrameLayout>
+</LinearLayout>

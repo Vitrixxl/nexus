@@ -1,5 +1,7 @@
 use super::{
     super::{caption, hbox, label, vbox},
+    calendar::Month,
+    quick::icon_button,
     shell::{BAR, GAP},
     slide::{self, Pose, Slide},
 };
@@ -507,14 +509,20 @@ impl Popups {
     }
 }
 
+type GoBack = Rc<dyn Fn(Option<&gtk::gdk::Monitor>)>;
+
 /// The calendar and the notifications still live, in a panel at the right of the screen.
 pub struct Center {
     pub widget: gtk::Box,
     /// Do not disturb.
     pub quiet: gtk::Switch,
-    calendar: gtk::Calendar,
+    pub calendar: Rc<Month>,
     /// Closes the panel, once it exists, when a notification is acted on.
     pub close: RefCell<Rc<dyn Fn()>>,
+    /// Back to Quick Settings, on the screen it was on.
+    pub go_back: RefCell<GoBack>,
+    back_head: gtk::Box,
+    back_to: Rc<RefCell<Option<gtk::gdk::Monitor>>>,
     list: gtk::Box,
     scroll: gtk::ScrolledWindow,
     empty: gtk::Label,
@@ -523,54 +531,25 @@ pub struct Center {
     clear: gtk::Button,
     server: Rc<Server>,
 }
-/// The calendar under "November 2026 ‹ ›".
-fn calendar_card(calendar: &gtk::Calendar) -> gtk::Box {
-    let month = label("", "calendar-month");
-    month.set_hexpand(true);
-    month.set_xalign(0.);
-    let head = hbox(2);
-    head.add_css_class("calendar-head");
-    head.append(&month);
-    for (icon, title, by) in [
-        ("go-previous-symbolic", "Previous month", -1),
-        ("go-next-symbolic", "Next month", 1),
-    ] {
-        let step = gtk::Button::from_icon_name(icon);
-        step.add_css_class("calendar-step");
-        step.set_tooltip_text(Some(title));
-        step.update_property(&[gtk::accessible::Property::Label(title)]);
-        let calendar = calendar.clone();
-        step.connect_clicked(move |_| {
-            if let Ok(date) = calendar.date().add_months(by) {
-                calendar.select_day(&date);
-            }
-        });
-        head.append(&step);
-    }
-    let title = move |calendar: &gtk::Calendar| {
-        if let Ok(text) = calendar.date().format("%B %Y") {
-            month.set_text(&text);
-        }
-    };
-    title(calendar);
-    // A click on a day of another month moves it too.
-    calendar.connect_notify_local(None, move |calendar, _| title(calendar));
-    let card = vbox(2);
-    card.add_css_class("center-calendar");
-    card.append(&head);
-    card.append(calendar);
-    card
-}
 impl Center {
     pub fn new(server: Rc<Server>) -> Rc<Self> {
         let widget = vbox(12);
         widget.add_css_class("notification-center");
         widget.set_width_request(CENTER_WIDTH);
-        let calendar = gtk::Calendar::new();
-        calendar.set_show_week_numbers(false);
-        // Its own heading has a pair of steppers each for the month and the year.
-        calendar.set_show_heading(false);
-        widget.append(&calendar_card(&calendar));
+        // Only when Quick Settings led here, as its own pages have.
+        let back_head = hbox(6);
+        back_head.add_css_class("quick-head");
+        back_head.set_visible(false);
+        let back = icon_button("go-previous-symbolic", "Back");
+        back_head.append(&back);
+        let name = label("Notifications and calendar", "section-title");
+        name.set_wrap(false);
+        name.set_hexpand(true);
+        name.set_valign(gtk::Align::Center);
+        back_head.append(&name);
+        widget.append(&back_head);
+        let calendar = Month::new();
+        widget.append(&calendar.widget);
         let head = hbox(10);
         let title = label("Notifications", "center-title");
         title.set_hexpand(true);
@@ -614,11 +593,14 @@ impl Center {
         clear.connect_clicked(move |_| s.clear());
         foot.append(&clear);
         widget.append(&foot);
-        Rc::new(Self {
+        let this = Rc::new(Self {
             widget,
             quiet,
             calendar,
             close: RefCell::new(Rc::new(|| {})),
+            go_back: RefCell::new(Rc::new(|_| {})),
+            back_head,
+            back_to: Rc::default(),
             list,
             scroll,
             empty,
@@ -626,14 +608,33 @@ impl Center {
             count,
             clear,
             server,
-        })
+        });
+        let weak = Rc::downgrade(&this);
+        back.connect_clicked(move |_| {
+            if let Some(s) = weak.upgrade() {
+                let go = s.go_back.borrow().clone();
+                let monitor = s.back_to.borrow().clone();
+                go(monitor.as_ref());
+            }
+        });
+        this
+    }
+    /// Whether this opening came from Quick Settings, on `monitor`.
+    pub fn offer_back(&self, on: bool, monitor: Option<&gtk::gdk::Monitor>) {
+        self.back_head.set_visible(on);
+        *self.back_to.borrow_mut() = monitor.cloned();
+    }
+    /// Keeps the panel on a screen `height` tall, with the calendar at its tallest.
+    pub fn fit(&self, height: i32) {
+        // The calendar with the form open, the rows around the list, the margins.
+        const AROUND: i32 = 560 + 126 + 36 + BAR + 2 * GAP;
+        self.scroll
+            .set_max_content_height((height - AROUND).clamp(120, 520));
     }
     /// Back to today. Only on opening: a notification arriving must not undo
     /// the browsing of months. It may have stayed up for days; today moves on.
     pub fn today(&self) {
-        if let Ok(now) = glib::DateTime::now_local() {
-            self.calendar.select_day(&now);
-        }
+        self.calendar.reset();
     }
     pub fn refresh(&self) {
         while let Some(child) = self.list.first_child() {

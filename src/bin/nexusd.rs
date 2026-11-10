@@ -266,6 +266,19 @@ fn main() -> anyhow::Result<()> {
                                 phone.set_notes_sync(args["on"].as_bool().unwrap_or(true));
                                 Ok(serde_json::Value::Null)
                             }
+                            "calendar" => Ok(phone.calendar_events(
+                                args["from"].as_i64().unwrap_or_default(),
+                                args["to"].as_i64().unwrap_or_default(),
+                            )),
+                            "calendar_save" | "calendar_delete" => (|| {
+                                let event = serde_json::from_value(args["event"].clone())?;
+                                phone.calendar_change(if op == "calendar_save" {
+                                    calendar::Change::Save(event)
+                                } else {
+                                    calendar::Change::Delete(event)
+                                })?;
+                                Ok(serde_json::Value::Null)
+                            })(),
                             "pull" => {
                                 let dir = match arg("dest") {
                                     d if !d.is_empty() => d.into(),
@@ -293,6 +306,19 @@ fn main() -> anyhow::Result<()> {
                             "mms_part" => phone
                                 .mms_part(args["part"].as_i64().unwrap_or_default(), &arg("name"))
                                 .map(|p| serde_json::json!({ "path": p })),
+                            "vault_answer" => phone
+                                .set_vault_answer(&arg("answer"))
+                                .map(|()| serde_json::Value::Null),
+                            "vault_sync" => {
+                                phone.kick_vault();
+                                Ok(serde_json::Value::Null)
+                            }
+                            "vault_fetch_other" => phone.vault_fetch_other(),
+                            "vault_adopt" => phone.vault_adopt(),
+                            // The file, ciphertext or not, stays off this socket.
+                            op if op.starts_with("vault_") => {
+                                Err(anyhow::anyhow!("Not available here"))
+                            }
                             _ => phone.request(&op, args),
                         };
                         match result {

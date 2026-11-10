@@ -68,7 +68,9 @@ public class Link extends NotificationListenerService {
     /** The connection to the desktop in use, by host:port: one at a time. */
     private final Map<String, Conn> conns = new ConcurrentHashMap<>();
 
-    /** The paired desktops: [{id, host, port, token, name}]. */
+    static { VaultStore.changed = Link::vaultChanged; }
+
+    /** The paired desktops: [{id, host, port, token, name, vault}]; vault is the sync consent. */
     static JSONArray pairs(Context c) {
         SharedPreferences p = c.getSharedPreferences("pair", MODE_PRIVATE);
         try {
@@ -184,6 +186,64 @@ public class Link extends NotificationListenerService {
         }
     }
 
+    /** Tells the connected desktop that the vault, or the consent, changed. */
+    static void vaultChanged() {
+        Link l = self;
+        if (l != null) for (Conn c : l.conns.values()) {
+            if (c.connected()) l.pool.execute(() -> { try { c.send(new JSONObject().put("t", "vault_changed")); } catch (Exception ignored) {} });
+        }
+    }
+
+    static final int CONSENT_NOTIFICATION = 7301;
+
+    /** "ask", "yes" or "no" for this desktop. Forgotten with its pairing: a new pairing asks again. */
+    static String consent(Context c, String id) {
+        JSONArray list = pairs(c);
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject p = list.optJSONObject(i);
+            if (p != null && p.optString("id").equals(id)) return p.optString("vault", "ask");
+        }
+        return "no";
+    }
+
+    static void setConsent(Context c, String id, String consent) {
+        JSONArray list = pairs(c);
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject p = list.optJSONObject(i);
+            if (p != null && p.optString("id").equals(id)) try { p.put("vault", consent); } catch (Exception ignored) {}
+        }
+        c.getSharedPreferences("pair", MODE_PRIVATE).edit().putString("list", list.toString()).apply();
+        vaultChanged();
+    }
+
+    /** Tells the connected desktop to read the calendars again. */
+    static void calendarChanged() {
+        Link l = self;
+        if (l != null) for (Conn c : l.conns.values()) {
+            if (c.connected()) l.pool.execute(() -> { try { c.send(new JSONObject().put("t", "calendar_changed")); } catch (Exception ignored) {} });
+        }
+    }
+    private final Handler calendarHandler = new Handler(Looper.getMainLooper());
+    /** One word for a burst of changes, as a calendar account's sync makes them. */
+    private final Runnable calendarSettled = () -> {
+        calendarChanged();
+        pool.execute(() -> { try { CalWidget.refresh(this); } catch (Exception ignored) {} });
+    };
+    private final android.database.ContentObserver calendarObserver = new android.database.ContentObserver(calendarHandler) {
+        @Override public void onChange(boolean self) {
+            calendarHandler.removeCallbacks(calendarSettled);
+            calendarHandler.postDelayed(calendarSettled, 1500);
+        }
+    };
+
+    /** Starts following the calendars; Android refuses it until access is granted, so again after that. */
+    static void watchCalendar() {
+        Link l = self;
+        if (l == null) return;
+        l.getContentResolver().unregisterContentObserver(l.calendarObserver);
+        try { l.getContentResolver().registerContentObserver(android.provider.CalendarContract.CONTENT_URI, true, l.calendarObserver); } catch (Exception ignored) {}
+    }
+
     /** The connected desktop's name, or null. */
     static String connectedDesktop() {
         Link l = self;
@@ -202,6 +262,7 @@ public class Link extends NotificationListenerService {
     @Override public void onListenerConnected() {
         self = this;
         try { registerReceiver(unlocked, new IntentFilter(Intent.ACTION_USER_PRESENT)); } catch (Exception ignored) {}
+        watchCalendar();
         // Chats that arrived while the listener was away, still in the shade.
         pool.execute(() -> {
             StatusBarNotification[] shown = getActiveNotifications();
@@ -213,6 +274,7 @@ public class Link extends NotificationListenerService {
     @Override public void onListenerDisconnected() {
         stopAll();
         try { unregisterReceiver(unlocked); } catch (Exception ignored) {}
+        getContentResolver().unregisterContentObserver(calendarObserver);
     }
     @Override public void onDestroy() { stopAll(); super.onDestroy(); }
 
@@ -258,6 +320,8 @@ public class Link extends NotificationListenerService {
         private final Object wake = new Object();
         /** Notifications this desktop has, by key, with their post time. */
         final Map<String, Long> sent = new HashMap<>();
+        /** The question was asked on this connection. */
+        volatile boolean asked;
 
         Conn(JSONObject p) {
             id = p.optString("id");
@@ -313,6 +377,7 @@ public class Link extends NotificationListenerService {
                     }
                     status = "Connected";
                     backoff = 2000;
+                    asked = false;
                     // Paired from a pasted link, it knew only the address.
                     String desktop = welcome.optString("name");
                     if (!desktop.isEmpty() && name.equals(host)) rename(Link.this, id, desktop);
@@ -370,7 +435,7 @@ public class Link extends NotificationListenerService {
             try {
                 r.put("t", "res").put("id", m.getLong("id"));
                 try {
-                    r.put("ok", true).put("data", op(m.getString("op"), m));
+                    r.put("ok", true).put("data", op(this, m.getString("op"), m));
                 } catch (Throwable e) {
                     r.put("ok", false).put("error", e.getMessage() != null ? e.getMessage() : e.toString());
                     r.remove("data");
@@ -380,8 +445,53 @@ public class Link extends NotificationListenerService {
         }
     }
 
-    private JSONObject op(String op, JSONObject a) throws Exception {
+    private static final java.util.List<String> FILE_OPS = Arrays.asList("ls", "read", "write", "mkdir", "delete", "rename", "thumb");
+
+    /** Inside this app's private storage: where the vault and the consent live. */
+    private boolean secret(String path) throws Exception {
+        if (path.isEmpty()) return false;
+        String dir = getDataDir().getCanonicalPath(), p = new File(path).getCanonicalPath();
+        return p.equals(dir) || p.startsWith(dir + "/");
+    }
+
+    /** Sync-consent notification, once per connection; never a yes on the notification itself. */
+    private void askConsent(Conn c) {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        nm.createNotificationChannel(new android.app.NotificationChannel("vault", "Password sync", NotificationManager.IMPORTANCE_DEFAULT));
+        Intent open = new Intent(this, Vault.class).putExtra("ask", c.id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        nm.notify(c.id, CONSENT_NOTIFICATION, new Notification.Builder(this, "vault").setSmallIcon(R.drawable.ic_fg)
+                .setContentTitle("Sync passwords with " + c.name + "?")
+                .setContentText("Tap to choose. Nothing syncs until you say yes.")
+                .setAutoCancel(true)
+                .setContentIntent(android.app.PendingIntent.getActivity(this, c.id.hashCode(), open, android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT))
+                .build());
+    }
+
+    private JSONObject vaultOp(Conn c, String op, JSONObject a) throws Exception {
+        String consent = consent(this, c.id);
+        VaultStore store = VaultStore.get(this);
+        if (op.equals("vault_hello")) {
+            if (consent.equals("ask") && !c.asked) {
+                c.asked = true;
+                askConsent(c);
+            }
+            String id = store.id();
+            return new JSONObject().put("consent", consent).put("id", id == null ? JSONObject.NULL : id);
+        }
+        if (!consent.equals("yes")) throw new Exception("Password sync isn't allowed for this desktop");
+        if (op.equals("vault_pull")) {
+            JSONObject file = store.file();
+            return new JSONObject().put("vault", file == null ? JSONObject.NULL : file);
+        }
+        store.push(a.getJSONObject("vault"), a.optBoolean("adopt"));
+        return new JSONObject();
+    }
+
+    private JSONObject op(Conn c, String op, JSONObject a) throws Exception {
+        // The desktop browses shared storage, never this app's: consent couldn't hold otherwise.
+        if (FILE_OPS.contains(op) && (secret(a.optString("path")) || secret(a.optString("to")))) throw new Exception("That folder is private to Nexus");
         switch (op) {
+            case "vault_hello": case "vault_pull": case "vault_push": return vaultOp(c, op, a);
             case "ls": return ls(a.optString("path"));
             case "read": {
                 try (RandomAccessFile f = new RandomAccessFile(a.getString("path"), "r")) {
@@ -419,6 +529,9 @@ public class Link extends NotificationListenerService {
             case "notes_commit": notes(this).commit(a.getString("path"), a.getString("hash"), a.optString("expect")); return new JSONObject();
             case "notes_trash": notes(this).trash(a.getString("path"), a.getString("expect"), a.getString("stamp")); return new JSONObject();
             case "notes_move": notes(this).move(a.getString("path"), a.getString("to"), a.getString("expect")); return new JSONObject();
+            case "calendar_list": return Agenda.list(this, a.getLong("from"), a.getLong("to"));
+            case "calendar_save": Agenda.save(this, Agenda.Item.from(a.getJSONObject("event"))); return new JSONObject();
+            case "calendar_delete": Agenda.delete(this, Agenda.Item.from(a.getJSONObject("event"))); return new JSONObject();
             case "info": return info();
             case "sms_threads": return threads(a.optString("stamp"));
             case "sms_list": return messages(a.getLong("thread"), a.optString("name"), a.optLong("since"));

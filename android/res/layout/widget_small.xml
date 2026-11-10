@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="horizontal" android:background="@drawable/widget_bg"
+    android:clipToOutline="true" android:padding="16dp">
+    <LinearLayout android:layout_width="84dp" android:layout_height="match_parent"
+        android:orientation="vertical" android:gravity="center_vertical">
+        <TextView android:id="@+id/w_weekday" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="Monday" android:textSize="13sp" android:textColor="@color/widget_accent"
+            android:fontFamily="sans-serif-medium" android:maxLines="1" />
+        <TextView android:id="@+id/w_day" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="9" android:textSize="50sp" android:textColor="@color/widget_fg"
+            android:fontFamily="sans-serif-light" android:includeFontPadding="false" android:maxLines="1" />
+        <TextView android:id="@+id/w_month" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="November" android:textSize="13sp" android:textColor="@color/widget_muted" android:maxLines="1" />
+    </LinearLayout>
+    <FrameLayout android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+        android:layout_marginStart="8dp">
+        <LinearLayout android:id="@+id/w_list" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:orientation="vertical" android:gravity="center_vertical" />
+        <TextView android:id="@+id/w_empty" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:gravity="center_vertical" android:paddingEnd="36dp" android:text="Nothing coming up"
+            android:textSize="14sp" android:textColor="@color/widget_muted" android:visibility="gone" />
+        <ImageView android:id="@+id/w_add" android:layout_width="32dp" android:layout_height="32dp"
+            android:layout_gravity="top|end" android:background="@drawable/widget_add" android:padding="7dp"
+            android:src="@drawable/ic_add" android:tint="@color/widget_fg" android:contentDescription="Add an event" />
+    </FrameLayout>
+</LinearLayout>

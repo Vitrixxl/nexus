@@ -128,6 +128,16 @@ public class Main extends Activity {
         notes = column();
         notes.setBackground(rounded(surface, 16));
         root.addView(notes);
+        root.addView(heading("Calendar"));
+        LinearLayout agenda = column();
+        agenda.setBackground(rounded(surface, 16));
+        agenda.addView(row("Calendar", "Your events, here and on the desktop", null, () -> startActivity(new Intent(this, Cal.class)), null));
+        root.addView(agenda);
+        root.addView(heading("Passwords"));
+        LinearLayout vault = column();
+        vault.setBackground(rounded(surface, 16));
+        vault.addView(row("Passwords", "Saved logins, here and on the desktop", null, () -> startActivity(new Intent(this, Vault.class)), null));
+        root.addView(vault);
         root.addView(heading("Desktops"));
         desktops = column();
         desktops.setBackground(rounded(surface, 16));
@@ -386,6 +396,14 @@ public class Main extends Activity {
         if (listeners == null || !listeners.contains(getPackageName())) {
             add("Allow notification access", "The link runs inside it, and forwards notifications", new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
         }
+        android.view.autofill.AutofillManager autofill = getSystemService(android.view.autofill.AutofillManager.class);
+        if (autofill != null && autofill.isAutofillSupported() && !autofill.hasEnabledAutofillServices()) {
+            add("Fill passwords with Nexus", "Pick Nexus Passwords as your autofill service", new Intent(Settings.ACTION_REQUEST_SET_AUTOFILL_SERVICE)
+                    .setData(Uri.parse("package:" + getPackageName())));
+        }
+        if (Build.VERSION.SDK_INT >= 33 && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
+            ask("Allow notifications", "So a desktop can ask to sync passwords", Manifest.permission.POST_NOTIFICATIONS);
+        }
         if (Control.self == null) {
             add("Allow screen control", "Under Downloaded apps, turn on Nexus. Your desktop and its agents can then see and use this screen", new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
         }
@@ -407,6 +425,9 @@ public class Main extends Activity {
         }
         if (!granted(Manifest.permission.CALL_PHONE) || !granted(Manifest.permission.READ_PHONE_STATE) || !granted(Manifest.permission.ANSWER_PHONE_CALLS)) {
             ask("Allow phone calls", "Place and hang up calls from the desktop", Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE, Manifest.permission.ANSWER_PHONE_CALLS);
+        }
+        if (!granted(Manifest.permission.READ_CALENDAR) || !granted(Manifest.permission.WRITE_CALENDAR)) {
+            ask("Allow calendar", "See and add events from the desktop and the widget", Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR);
         }
         if (!granted(Manifest.permission.READ_CONTACTS)) {
             ask("Show contact names", "Names instead of numbers in conversations", Manifest.permission.READ_CONTACTS);
@@ -477,6 +498,9 @@ public class Main extends Activity {
                 break;
             }
         }
+        CalWidget.refresh(this);
+        Link.watchCalendar();
+        Link.calendarChanged();
         refresh();
     }
 }

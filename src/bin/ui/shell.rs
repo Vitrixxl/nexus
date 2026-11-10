@@ -399,7 +399,7 @@ impl Drawer {
         });
         let weak = Rc::downgrade(&this);
         let key = gtk::EventControllerKey::new();
-        key.set_propagation_phase(gtk::PropagationPhase::Capture);
+        // Bubbling: what is inside, a form or a menu, answers Escape first.
         key.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
                 if let Some(s) = weak.upgrade() {
@@ -469,7 +469,6 @@ struct Bar {
     monitor: gtk::gdk::Monitor,
     window: gtk::ApplicationWindow,
     dock: Rc<Dock>,
-    app: gtk::Label,
     notifications: Indicator,
     /// The paired phone: its battery while connected, dimmed while away, red
     /// when the link is broken; hidden until a phone has paired.
@@ -533,28 +532,6 @@ const WHEEL_HOLD: Duration = Duration::from_millis(1500);
 /// Width of a workspace button, and of the pill behind the active one.
 const WORKSPACE_WIDTH: i32 = 26;
 /// The Nexus mark: three nodes joined. Drawn, so that it follows the text colour.
-fn brand_mark() -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::new();
-    area.set_content_width(16);
-    area.set_content_height(16);
-    area.set_valign(gtk::Align::Center);
-    area.set_draw_func(|area, cr, w, h| {
-        cr.set_source_color(&area.color());
-        let (w, h) = (f64::from(w), f64::from(h));
-        let nodes = [(0.5, 0.16), (0.14, 0.82), (0.86, 0.82)].map(|(x, y)| (x * w, y * h));
-        cr.set_line_width(1.5);
-        cr.move_to(nodes[0].0, nodes[0].1);
-        cr.line_to(nodes[1].0, nodes[1].1);
-        cr.line_to(nodes[2].0, nodes[2].1);
-        cr.close_path();
-        let _ = cr.stroke();
-        for (x, y) in nodes {
-            cr.arc(x, y, 2.5, 0., std::f64::consts::TAU);
-            let _ = cr.fill();
-        }
-    });
-    area
-}
 /// A bar label stays on one line: a wrapping one gets squeezed and clipped.
 fn bar_label(text: &str, class: &str) -> gtk::Label {
     let l = super::super::label(text, class);
@@ -651,19 +628,9 @@ impl Bars {
             window.set_anchor(edge, true);
         }
         window.auto_exclusive_zone_enable();
-        // Left: the system menu, the application in front and the workspaces.
+        // Left: the workspaces.
         let left = hbox(0);
         left.add_css_class("bar-island");
-        let brand = self.button(monitor, "", "System", "system");
-        brand.add_css_class("bar-brand");
-        brand.set_child(Some(&brand_mark()));
-        brand.update_property(&[gtk::accessible::Property::Label("System menu")]);
-        self.surface.anchor("system", monitor, &brand);
-        left.append(&brand);
-        let app = bar_label("Desktop", "bar-app");
-        app.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        app.set_max_width_chars(32);
-        left.append(&app);
         let workspaces = hbox(2);
         workspaces.set_homogeneous(true);
         workspaces.set_valign(gtk::Align::Center);
@@ -793,7 +760,6 @@ impl Bars {
                     }
                 })
             }),
-            app,
             notifications,
             phone,
             tray,
@@ -1051,7 +1017,7 @@ impl Bars {
     }
     pub fn workspaces(&self, state: &super::workspaces::State) {
         *self.windows.borrow_mut() = Some(state.clone());
-        let (workspaces, monitors, clients, focused) = state;
+        let (workspaces, monitors, clients, _) = state;
         let Some(workspaces) = workspaces.as_array() else {
             return;
         };
@@ -1076,12 +1042,6 @@ impl Bars {
             ids.sort();
             ids.dedup();
             bar.show_workspaces(ids, active);
-            // The application in front of this screen, as the bar's heading.
-            let front = (focused["workspace"]["id"].as_i64() == Some(active))
-                .then(|| focused["class"].as_str())
-                .flatten();
-            bar.app
-                .set_text(&front.map_or("Desktop".to_string(), |class| apps.name(class)));
             let empty = !clients.as_array().is_some_and(|all| {
                 all.iter()
                     .any(|c| c["workspace"]["id"].as_i64() == Some(active))

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_cell" android:layout_width="0dp" android:layout_height="32dp" android:layout_weight="1">
+    <TextView android:id="@+id/w_num" android:layout_width="26dp" android:layout_height="26dp"
+        android:layout_gravity="top|center_horizontal" android:gravity="center"
+        android:textSize="12.5sp" android:textColor="@color/widget_fg" android:fontFamily="sans-serif-medium"
+        android:includeFontPadding="false" android:maxLines="1" />
+    <ImageView android:id="@+id/w_mark" android:layout_width="4dp" android:layout_height="4dp"
+        android:layout_gravity="bottom|center_horizontal" android:src="@drawable/widget_dot" android:visibility="invisible" />
+</FrameLayout>

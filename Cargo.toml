@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_10"] }
 gtk4-layer-shell = "0.7.1"
+pangocairo = "0.21"
 zbus = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 fs2 = "0.4"
@@ -28,17 +29,28 @@ wayland-scanner = "0.31"
 wayland-backend = "0.3"
 bitflags = "2"
 qrcode = { version = "0.14.1", default-features = false }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"] }
+pbkdf2 = "0.12"
+sha2 = "0.10"
+zeroize = "1"
+getrandom = "0.4"
+unicode-normalization = "0.1"
 
 [features]
 # Test hooks, for labs only: NEXUS_PACKAGES_FAKE stands in for sudo and pacman,
 # NEXUS_LOCK_TEST and NEXUS_LOCK_PREVIEW_STATE steer the lock, NEXUS_PHONE_FAKE
-# stands in for the phone. An installed build
+# stands in for the phone, NEXUS_VAULT_LOCK_FILE and NEXUS_VAULT_IDLE steer the
+# vault's auto-lock. An installed build
 # must not have them.
 lab = []
 
 [profile.release]
 opt-level = 2
 strip = true
+
+# The tests run PBKDF2 for real: 600000 rounds crawl unoptimised.
+[profile.dev.package.sha2]
+opt-level = 3
 
 [[bin]]
 name = "nexus"
@@ -55,3 +67,11 @@ path = "src/bin/files/main.rs"
 [[bin]]
 name = "nexus-notes"
 path = "src/bin/notes/main.rs"
+
+[[bin]]
+name = "nexus-vaultd"
+path = "src/bin/vaultd.rs"
+
+[[bin]]
+name = "nexus-vault-host"
+path = "src/bin/vault_host.rs"

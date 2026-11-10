@@ -1,4 +1,5 @@
 pub mod battery;
+pub mod calendar;
 pub mod call;
 pub mod clipboard;
 pub mod control;
@@ -10,6 +11,8 @@ pub mod monitor;
 pub mod notifications;
 pub mod osd;
 pub mod packages;
+pub mod paint;
+pub mod passwords;
 pub mod phone;
 pub mod quick;
 pub mod shell;

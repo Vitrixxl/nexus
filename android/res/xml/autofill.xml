@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Compatibility mode: browsers the system allows it for (settings autofill_compat_mode_allowed_packages), for versions
+     without native third-party autofill. Chrome is served natively by "Autofill using another service" from 131 on. -->
+<autofill-service xmlns:android="http://schemas.android.com/apk/res/android">
+    <compatibility-package android:name="com.brave.browser" android:maxLongVersionCode="2147483647" />
+    <compatibility-package android:name="com.microsoft.emmx" android:maxLongVersionCode="2147483647" />
+    <compatibility-package android:name="com.opera.browser" android:maxLongVersionCode="2147483647" />
+    <compatibility-package android:name="com.sec.android.app.sbrowser" android:maxLongVersionCode="2147483647" />
+</autofill-service>

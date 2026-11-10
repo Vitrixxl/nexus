@@ -436,38 +436,136 @@ enum Sort {
 }
 struct Row {
     row: gtk::ListBoxRow,
+    /// In `COLUMNS` order.
     cells: [gtk::Label; 6],
+    /// CPU, memory.
+    bars: [gtk::ProgressBar; 2],
     shows: Cell<i32>,
 }
-/// Name, PID, user, CPU, memory, threads.
-fn columns() -> [gtk::Label; 6] {
-    let cell = |chars: i32, xalign: f32| {
-        let l = text("", "");
-        l.set_width_chars(chars);
-        l.set_max_width_chars(chars);
-        l.set_xalign(xalign);
-        l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        l
-    };
-    let name = cell(0, 0.);
-    name.set_hexpand(true);
-    [
-        name,
-        cell(7, 1.),
-        cell(9, 0.),
-        cell(6, 1.),
-        cell(9, 1.),
-        cell(4, 1.),
-    ]
+struct Column {
+    sort: Sort,
+    title: &'static str,
+    /// Of the text, in pixels: fixed so that the header and the rows line up
+    /// whatever font size each has.
+    width: i32,
+    xalign: f32,
+    /// Shares the width left over, so a wide window draws longer bars instead of
+    /// pushing the numbers away from the names.
+    fills: bool,
+    bar: bool,
+    /// Goes when the table is narrow; the detail strip still says it.
+    optional: bool,
 }
-const COLUMNS: [(Sort, &str); 6] = [
-    (Sort::Name, "Name"),
-    (Sort::Pid, "PID"),
-    (Sort::User, "User"),
-    (Sort::Cpu, "CPU %"),
-    (Sort::Memory, "Memory"),
-    (Sort::Threads, "Threads"),
+const COLUMNS: [Column; 6] = [
+    Column {
+        sort: Sort::Name,
+        title: "Name",
+        width: 120,
+        xalign: 0.,
+        fills: true,
+        bar: false,
+        optional: false,
+    },
+    Column {
+        sort: Sort::Cpu,
+        title: "CPU",
+        width: 48,
+        xalign: 1.,
+        fills: true,
+        bar: true,
+        optional: false,
+    },
+    Column {
+        sort: Sort::Memory,
+        title: "Memory",
+        width: 72,
+        xalign: 1.,
+        fills: true,
+        bar: true,
+        optional: false,
+    },
+    Column {
+        sort: Sort::Threads,
+        title: "Threads",
+        width: 62,
+        xalign: 1.,
+        fills: false,
+        bar: false,
+        optional: true,
+    },
+    Column {
+        sort: Sort::User,
+        title: "User",
+        width: 80,
+        xalign: 0.,
+        fills: false,
+        bar: false,
+        optional: true,
+    },
+    Column {
+        sort: Sort::Pid,
+        title: "PID",
+        width: 58,
+        xalign: 1.,
+        fills: false,
+        bar: false,
+        optional: false,
+    },
 ];
+impl Column {
+    /// The whole cell: the text and the shortest bar beside it.
+    fn cell_width(&self) -> i32 {
+        self.width + if self.bar { 8 + 32 } else { 0 }
+    }
+}
+const COLUMN_GAP: i32 = 12;
+/// Below this table width the optional columns give their room to the name.
+const FULL_TABLE: f64 = 660.;
+/// One filled row of the table, added to `line`.
+fn row_cells(line: &gtk::Box) -> ([gtk::Label; 6], [gtk::ProgressBar; 2]) {
+    let mut bars = vec![];
+    let cells = COLUMNS.each_ref().map(|c| {
+        let l = text(
+            "",
+            match c.sort {
+                Sort::Name => "monitor-proc-name",
+                Sort::Cpu | Sort::Memory => "",
+                _ => "monitor-quiet",
+            },
+        );
+        if c.sort != Sort::Name {
+            l.set_size_request(c.width, -1);
+        }
+        // A natural width of a character, so only the request sizes the column.
+        l.set_max_width_chars(1);
+        l.set_xalign(c.xalign);
+        l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        if c.fills {
+            let cell = hbox(8);
+            cell.set_hexpand(true);
+            // Here, not on the label: a tree's indent must not widen the column.
+            cell.set_size_request(c.cell_width(), -1);
+            l.set_hexpand(c.sort == Sort::Name);
+            cell.append(&l);
+            if c.bar {
+                let bar = gtk::ProgressBar::new();
+                bar.add_css_class("monitor-bar");
+                bar.add_css_class("monitor-proc-bar");
+                bar.set_hexpand(true);
+                bar.set_valign(gtk::Align::Center);
+                bar.set_size_request(32, -1);
+                cell.append(&bar);
+                bars.push(bar);
+            }
+            line.append(&cell);
+        } else {
+            line.append(&l);
+        }
+        l
+    });
+    let bars = bars.try_into().expect("two columns have a bar");
+    (cells, bars)
+}
 /// Users by uid, read once.
 fn users() -> HashMap<u32, String> {
     std::fs::read_to_string("/etc/passwd")
@@ -522,9 +620,13 @@ struct Page {
     selected: Cell<Option<i32>>,
     rows: Vec<Row>,
     list: gtk::ListBox,
-    headers: Vec<(Sort, gtk::Button, &'static str)>,
+    headers: Vec<(Sort, gtk::Button, gtk::Image)>,
+    full_table: Cell<bool>,
     count: gtk::Label,
     footer: gtk::Stack,
+    /// The selected process: its name, its figures, live, and its command.
+    detail_name: gtk::Label,
+    meta: gtk::Label,
     info: gtk::Label,
     end: gtk::Button,
     question: gtk::Label,
@@ -532,12 +634,14 @@ struct Page {
     #[cfg(feature = "lab")]
     search: gtk::SearchEntry,
     #[cfg(feature = "lab")]
-    tab_buttons: [gtk::ToggleButton; 3],
+    tab_buttons: [gtk::ToggleButton; 2],
     /// The process the confirmation names, fixed when it was asked.
     asking: RefCell<Option<(i32, String)>>,
     /// The info line holds what End did.
     told: Cell<bool>,
     empty: gtk::Label,
+    clear: gtk::Button,
+    tree_button: gtk::ToggleButton,
 }
 
 impl Page {
@@ -873,19 +977,29 @@ impl Page {
             self.empty.set_text(&if filter.is_empty() {
                 "Reading processes…".to_string()
             } else {
-                format!("No process matches “{filter}”")
+                format!("No process matches “{}”", self.filter.borrow())
             });
+            self.clear.set_visible(!filter.is_empty());
         }
         self.count
             .set_text(&match (shown.len(), filter.is_empty()) {
+                (0, true) => String::new(),
                 (n, true) if n > ROWS && self.tree.get() => {
                     format!("{n} processes · first {ROWS} shown")
                 }
                 (n, true) if n > ROWS => format!("{n} processes · top {ROWS} shown"),
                 (n, true) => format!("{n} processes"),
-                (1, false) => "1 match".into(),
-                (n, false) => format!("{n} matches"),
+                (n, false) => format!("{n} of {}", sample.procs.len()),
             });
+        // Against the busiest shown, so the bars compare the rows with each other;
+        // half a core at least, or an idle system would look pegged.
+        let top_cpu = shown.iter().map(|(p, _)| p.cpu).fold(0.5, f32::max);
+        let top_memory = shown
+            .iter()
+            .map(|(p, _)| p.memory)
+            .max()
+            .unwrap_or(0)
+            .max(1) as f64;
         let selected = self.selected.get();
         let mut still = None;
         for (i, row) in self.rows.iter().enumerate() {
@@ -895,14 +1009,16 @@ impl Page {
             };
             row.row.set_visible(true);
             row.shows.set(p.pid);
-            let [name, pid, user_, cpu, memory, threads] = &row.cells;
-            name.set_margin_start(14 * (*depth).min(8) as i32);
+            let [name, cpu, memory, threads, user_, pid] = &row.cells;
+            name.set_margin_start(12 * (*depth).min(6) as i32);
             name.set_text(&p.name);
-            pid.set_text(&p.pid.to_string());
-            user_.set_text(user(p));
-            cpu.set_text(&format!("{:.1}", p.cpu * 100.));
+            cpu.set_text(&format!("{:.1}%", p.cpu * 100.));
             memory.set_text(&size(p.memory));
             threads.set_text(&p.threads.to_string());
+            user_.set_text(user(p));
+            pid.set_text(&p.pid.to_string());
+            row.bars[0].set_fraction(f64::from(p.cpu / top_cpu));
+            row.bars[1].set_fraction(p.memory as f64 / top_memory);
             if Some(p.pid) == selected {
                 still = Some(&row.row);
             }
@@ -912,23 +1028,57 @@ impl Page {
             Some(row) => self.list.select_row(Some(row)),
             None => self.list.unselect_all(),
         }
-        for (s, button, title) in &self.headers {
-            let arrow = match (*s == sort, descending) {
-                (false, _) => "",
-                (true, true) => " ↓",
-                (true, false) => " ↑",
-            };
-            button.set_label(&format!("{title}{arrow}"));
+        if let Some(p) = selected.and_then(|pid| sample.procs.iter().find(|p| p.pid == pid)) {
+            self.meta.set_text(&self.figures(p));
+        }
+    }
+    /// The header's arrow and emphasis: changes on a click, not with each sample.
+    fn mark_sort(&self) {
+        let (sort, descending) = self.sort.get();
+        for (s, button, arrow) in &self.headers {
             if *s == sort {
+                arrow.set_icon_name(Some(if descending {
+                    "go-down-symbolic"
+                } else {
+                    "go-up-symbolic"
+                }));
+                arrow.set_opacity(1.);
                 button.add_css_class("active");
             } else {
+                arrow.set_opacity(0.);
                 button.remove_css_class("active");
             }
         }
     }
+    /// The optional columns, shown or given up to the name.
+    fn fit(&self, width: f64) {
+        let full = width >= FULL_TABLE;
+        if self.full_table.replace(full) == full {
+            return;
+        }
+        for (i, column) in COLUMNS.iter().enumerate() {
+            if column.optional {
+                self.headers[i].1.set_visible(full);
+                for row in &self.rows {
+                    row.cells[i].set_visible(full);
+                }
+            }
+        }
+    }
+    /// What the rows may have scrolled away, kept live for the one selected.
+    fn figures(&self, p: &Proc) -> String {
+        let user = self.users.get(&p.uid).map_or("", String::as_str);
+        format!(
+            "{:.1}% CPU · {} · {} threads · {user} · PID {}",
+            p.cpu * 100.,
+            size(p.memory),
+            p.threads,
+            p.pid
+        )
+    }
     fn select(&self, pid: Option<i32>) {
         self.selected.set(pid);
-        self.end.set_sensitive(pid.is_some());
+        self.end.set_visible(pid.is_some());
         if pid.is_some() {
             self.told.set(false);
         }
@@ -941,6 +1091,7 @@ impl Page {
             if self.told.get() {
                 return;
             }
+            self.show_detail(false);
             self.info
                 .set_text("Select a process to see its command and end it");
             self.info.set_tooltip_text(None);
@@ -955,12 +1106,19 @@ impl Page {
                     .to_string()
             })
             .unwrap_or_default();
-        self.info.set_text(&if command.is_empty() {
-            format!("{} · PID {}", p.name, p.pid)
+        self.show_detail(true);
+        self.detail_name.set_text(&p.name);
+        self.meta.set_text(&self.figures(p));
+        self.info.set_text(if command.is_empty() {
+            "No command line"
         } else {
-            format!("PID {} · {command}", p.pid)
+            &command
         });
         self.info.set_tooltip_text(Some(&command));
+    }
+    fn show_detail(&self, shown: bool) {
+        self.detail_name.set_visible(shown);
+        self.meta.set_visible(shown);
     }
     /// Asks before ending: the process is fixed now, not when the answer comes.
     fn ask(&self) {
@@ -987,6 +1145,7 @@ impl Page {
             return;
         };
         self.footer.set_visible_child_name("info");
+        self.show_detail(false);
         // The PID could have gone to another process since the question.
         let same = std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .is_ok_and(|s| s.contains(&format!("({name})")));
@@ -1228,27 +1387,55 @@ pub fn page() -> gtk::Box {
     let search = gtk::SearchEntry::new();
     search.add_css_class("monitor-search");
     search.set_placeholder_text(Some("Filter by name, PID or user"));
-    search.set_hexpand(true);
+    search.set_width_chars(30);
     head.append(&search);
+    let count = text("", "caption muted monitor-number");
+    count.set_hexpand(true);
+    count.set_xalign(1.);
+    count.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+    head.append(&count);
     let tree = gtk::ToggleButton::with_label("Tree");
     tree.add_css_class("monitor-tree");
     tree.set_tooltip_text(Some("Show each process under the one that started it"));
     head.append(&tree);
     procs.append(&head);
-    let header = hbox(12);
+    let header = hbox(COLUMN_GAP);
     header.add_css_class("monitor-columns");
-    let mut headers = vec![];
-    for (label, (sort, title)) in columns().iter().zip(COLUMNS) {
-        let button = gtk::Button::with_label(title);
-        button.set_tooltip_text(Some("Sort by this column"));
-        button.set_hexpand(label.hexpands());
-        if let Some(child) = button.child().and_downcast::<gtk::Label>() {
-            child.set_width_chars(label.width_chars());
-            child.set_xalign(label.xalign());
-        }
-        header.append(&button);
-        headers.push((sort, button, title));
-    }
+    let headers: Vec<_> = COLUMNS
+        .iter()
+        .map(|c| {
+            let arrow = gtk::Image::from_icon_name("go-down-symbolic");
+            arrow.set_pixel_size(10);
+            arrow.set_opacity(0.);
+            let title = text(c.title, "");
+            let inner = hbox(3);
+            // The title lines up with the numbers, the arrow goes on the free side.
+            let arrow_first = !c.bar && c.xalign > 0.5;
+            if c.bar {
+                title.set_size_request(c.width, -1);
+                title.set_xalign(1.);
+            }
+            inner.set_halign(if arrow_first {
+                gtk::Align::End
+            } else {
+                gtk::Align::Start
+            });
+            if arrow_first {
+                inner.append(&arrow);
+            }
+            inner.append(&title);
+            if !arrow_first {
+                inner.append(&arrow);
+            }
+            let button = gtk::Button::new();
+            button.set_child(Some(&inner));
+            button.set_tooltip_text(Some("Sort by this column"));
+            button.set_hexpand(c.fills);
+            button.set_size_request(c.cell_width(), -1);
+            header.append(&button);
+            (c.sort, button, arrow)
+        })
+        .collect();
     // In line with the rows' padding, and room on the right for the scrollbar,
     // which would cover the last column.
     header.set_margin_start(8);
@@ -1258,17 +1445,22 @@ pub fn page() -> gtk::Box {
     list.add_css_class("monitor-list");
     list.set_selection_mode(gtk::SelectionMode::Single);
     list.set_margin_end(14);
+    let empty_box = vbox(10);
+    empty_box.set_halign(gtk::Align::Center);
+    empty_box.set_margin_top(40);
     let empty = text("", "muted");
     empty.set_xalign(0.5);
-    empty.set_margin_top(24);
-    list.set_placeholder(Some(&empty));
+    empty_box.append(&empty);
+    let clear = gtk::Button::with_label("Clear filter");
+    clear.add_css_class("monitor-end");
+    clear.set_halign(gtk::Align::Center);
+    clear.set_visible(false);
+    empty_box.append(&clear);
+    list.set_placeholder(Some(&empty_box));
     let rows: Vec<Row> = (0..ROWS)
         .map(|_| {
-            let cells = columns();
-            let line = hbox(12);
-            for l in &cells {
-                line.append(l);
-            }
+            let line = hbox(COLUMN_GAP);
+            let (cells, bars) = row_cells(&line);
             let row = gtk::ListBoxRow::new();
             row.set_child(Some(&line));
             row.set_visible(false);
@@ -1276,6 +1468,7 @@ pub fn page() -> gtk::Box {
             Row {
                 row,
                 cells,
+                bars,
                 shows: Cell::new(0),
             }
         })
@@ -1290,17 +1483,25 @@ pub fn page() -> gtk::Box {
     footer.add_css_class("monitor-footer");
     footer.set_transition_type(gtk::StackTransitionType::Crossfade);
     footer.set_transition_duration(120);
-    let info_row = hbox(10);
+    let info_row = hbox(12);
+    let details = vbox(2);
+    details.set_hexpand(true);
+    details.set_valign(gtk::Align::Center);
+    let detail_name = text("", "monitor-detail-name");
+    detail_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let meta = text("", "caption monitor-number");
+    meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
     let info = text("", "caption muted");
-    info.set_hexpand(true);
     info.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    let count = text("", "caption muted monitor-number");
+    details.append(&detail_name);
+    details.append(&meta);
+    details.append(&info);
     let end = gtk::Button::with_label("End…");
     end.add_css_class("monitor-end");
-    end.set_sensitive(false);
+    end.set_valign(gtk::Align::Center);
+    end.set_visible(false);
     end.set_tooltip_text(Some("End the selected process (Delete)"));
-    info_row.append(&info);
-    info_row.append(&count);
+    info_row.append(&details);
     info_row.append(&end);
     footer.add_named(&info_row, Some("info"));
     let confirm_row = hbox(8);
@@ -1322,6 +1523,9 @@ pub fn page() -> gtk::Box {
     let confirm = gtk::Button::with_label("End process");
     confirm.add_css_class("monitor-end");
     confirm.add_css_class("destructive-action");
+    for button in [&cancel, &force, &confirm] {
+        button.set_valign(gtk::Align::Center);
+    }
     confirm_row.append(&asked);
     confirm_row.append(&cancel);
     confirm_row.append(&force);
@@ -1380,8 +1584,11 @@ pub fn page() -> gtk::Box {
         rows,
         list: list.clone(),
         headers,
+        full_table: Cell::new(true),
         count,
         footer,
+        detail_name,
+        meta,
         info,
         end: end.clone(),
         question,
@@ -1389,12 +1596,15 @@ pub fn page() -> gtk::Box {
         #[cfg(feature = "lab")]
         search: search.clone(),
         #[cfg(feature = "lab")]
-        tab_buttons: [perf_button.clone(), procs_button.clone(), tree.clone()],
+        tab_buttons: [perf_button.clone(), procs_button.clone()],
         asking: RefCell::default(),
         told: Cell::new(false),
         empty: empty.clone(),
+        clear: clear.clone(),
+        tree_button: tree.clone(),
     });
     page.select(None);
+    page.mark_sort();
 
     for (button, name) in [(&perf_button, "performance"), (&procs_button, "processes")] {
         let p = Rc::downgrade(&page);
@@ -1420,7 +1630,7 @@ pub fn page() -> gtk::Box {
             p.show();
         }
     });
-    for (sort, button, _) in &page.headers {
+    for (sort, button, ..) in &page.headers {
         let (p, sort) = (Rc::downgrade(&page), *sort);
         button.connect_clicked(move |_| {
             let Some(p) = p.upgrade() else { return };
@@ -1431,6 +1641,7 @@ pub fn page() -> gtk::Box {
             } else {
                 (sort, !matches!(sort, Sort::Name | Sort::Pid | Sort::User))
             });
+            p.mark_sort();
             p.show();
         });
     }
@@ -1445,7 +1656,17 @@ pub fn page() -> gtk::Box {
     search.connect_search_changed(move |search| {
         if let Some(p) = p.upgrade() {
             *p.filter.borrow_mut() = search.text().trim().to_string();
+            // A filter flattens the list; say so rather than ignore the toggle.
+            p.tree_button.set_sensitive(p.filter.borrow().is_empty());
             p.show();
+        }
+    });
+    let s = search.clone();
+    clear.connect_clicked(move |_| s.set_text(""));
+    let p = Rc::downgrade(&page);
+    scroll.hadjustment().connect_page_size_notify(move |a| {
+        if let Some(p) = p.upgrade() {
+            p.fit(a.page_size());
         }
     });
     let p = Rc::downgrade(&page);
@@ -1588,7 +1809,7 @@ fn lab(p: &Page) {
             }
         }
         "filter" => p.search.set_text(arg),
-        "tree" => p.tab_buttons[2].set_active(!p.tree.get()),
+        "tree" => p.tree_button.set_active(!p.tree.get()),
         "select" => {
             if let Some(r) = p.rows.get(arg.parse::<usize>().unwrap_or(0)) {
                 p.list.select_row(Some(&r.row));

@@ -70,7 +70,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!(
-            "Nexus — desktop control center\n\nnexus [launcher|clipboard|tray|battery|control|monitor|notifications|wifi|bluetooth|phone|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock [--preview]\nnexus messages\nnexus status\nnexus init-theme\n\n{}",
+            "Nexus — desktop control center\n\nnexus [launcher|clipboard|tray|battery|control|monitor|notifications|wifi|bluetooth|phone|sound|display|appearance|power|shell]\nnexus --page PAGE\nnexus screenshot [region|screen|window] [--live] [--save]\nnexus lock [--preview]\nnexus messages\nnexus passwords\nnexus paint\nnexus status\nnexus init-theme\n\n{}",
             phonectl::USAGE
         );
         return Ok(());
@@ -92,6 +92,12 @@ fn main() -> anyhow::Result<()> {
     }
     if args.first().is_some_and(|a| a == "call") {
         return ui::call::run(&args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "passwords") {
+        return ui::passwords::run();
+    }
+    if args.first().is_some_and(|a| a == "paint") {
+        return ui::paint::run();
     }
     if args.first().is_some_and(|a| a == "init-theme") {
         theme::write_theme(&theme::load())?;
@@ -1200,6 +1206,9 @@ fn build(
         if prompt_open.get() {
             return;
         }
+        let (page, from_quick) = page
+            .strip_suffix(":quick")
+            .map_or((page, false), |page| (page, true));
         let (page, unfold) = panel_page(page);
         if page == "notifications" {
             if shell2.window.is_visible() {
@@ -1212,7 +1221,15 @@ fn build(
                 popups2.clear();
                 phone_popups2.clear();
                 center2.today();
+                center2.offer_back(from_quick, monitor);
                 center2.refresh();
+                if let Some(m) = monitor.cloned().or_else(|| {
+                    gtk::gdk::Display::default()
+                        .and_then(|d| d.monitors().item(0))
+                        .and_downcast()
+                }) {
+                    center2.fit(m.geometry().height());
+                }
                 drawer2.show(monitor);
             }
             return;
@@ -1262,6 +1279,12 @@ fn build(
             glib::idle_add_local_once(move || {
                 search.grab_focus();
             });
+        }
+    });
+    let back = Rc::downgrade(&open);
+    *center.go_back.borrow_mut() = Rc::new(move |monitor| {
+        if let Some(open) = back.upgrade() {
+            open("quick", monitor);
         }
     });
     let open2 = open.clone();
@@ -1497,6 +1520,7 @@ fn build(
                     ui.updating.set(true);
                     quick.update(&s);
                     phone_page.update(&s.phone);
+                    center.calendar.update(&s.phone.calendar, drawer.is_open());
                     let theme_key = serde_json::to_string(&s.settings).unwrap_or_default();
                     if theme_key != last_theme && !ui.adjusting.get() {
                         if let Some(gtk_settings) = gtk::Settings::default() {

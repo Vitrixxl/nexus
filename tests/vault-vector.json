@@ -1,0 +1,37 @@
+{
+ "_comment": "Interop vector: password below unlocks it on every platform.",
+ "_password": "correct horse é battery",
+ "_kek_hex": "f09c6b3a6dec2fda4f468393efb8ae594d78fb58a00215fe091c2c22bdd76707",
+ "_vault_key_hex": "c8c7c6c5c4c3c2c1c0bfbebdbcbbbab9b8b7b6b5b4b3b2b1b0afaeadacabaaa9",
+ "_entry_plaintext": "{\"title\":\"Example\",\"urls\":[\"https://example.com/login\"],\"username\":\"ada\",\"password\":\"p@ss-é-1\",\"notes\":\"\",\"history\":[]}",
+ "vault": {
+  "v": 1,
+  "id": "00112233445566778899aabbccddeeff",
+  "kdf": {
+   "alg": "pbkdf2-sha256",
+   "iters": 100000,
+   "salt": "AQIDBAUGBwgJCgsMDQ4PEA=="
+  },
+  "key": {
+   "updated": 1794218000000,
+   "nonce": "MjM0NTY3ODk6Ozw9",
+   "ct": "DcDm1cSMZa09OYGtPx5bhorM9VfxO+UP3bVtcNgA/Qh5TINdUawWuBl3rhjgQZru"
+  },
+  "entries": {
+   "ffeeddccbbaa99887766554433221100": {
+    "updated": 1794218400000,
+    "deleted": false,
+    "device": "vector",
+    "nonce": "WltcXV5fYGFiY2Rl",
+    "ct": "VC4Hwdx871xNRtPSWlpJ+0ZNLWe7IzdFKIuMzw4OPx6QKIp/puWMNUup03aEGV4RHyXYObmVdTVCdyMZyHoZ64zzLg4fHDduisN7YimzwNL+UkKWwjsrnkxNR0HtZxjVL0Y0m17dhQP2DXCDHrwWM2KzpP6x0DfVmmzUt2pzklgjq4fB/5htkw=="
+   },
+   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+    "updated": 1794218400005,
+    "deleted": true,
+    "device": "vector",
+    "nonce": "goOEhYaHiImKi4yN",
+    "ct": "uapSNPdaJL56akSN16ru9lgQ"
+   }
+  }
+ }
+}

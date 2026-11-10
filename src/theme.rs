@@ -505,19 +505,37 @@ window.power-overlay.leaving {{ background: transparent; }}
 .notification-center .notification {{ background: {tile}; border-radius: 12px; padding: 8px 10px 10px; }}
 .notification-center .empty-state {{ padding: 18px 0 14px; }}
 .notification-center .muted, .notification-center .dim-label, .notification-center .notification .app-name {{ color: {center_muted}; }}
-.notification-center .center-calendar {{ background: {raised}; border-radius: 12px; padding: 6px 6px 6px; }}
-.notification-center .calendar-head {{ padding: 0 2px 2px 8px; }}
-.notification-center .calendar-month {{ font-size: 13px; font-weight: 600; }}
-.nexus button.calendar-step {{ min-width: 28px; min-height: 28px; padding: 0; background: transparent; color: {center_muted}; }}
+.notification-center .center-calendar {{ background: {raised}; border-radius: 12px; padding: 10px 12px 12px; }}
+.notification-center .calendar-head {{ padding: 0 0 6px 6px; }}
+.notification-center .calendar-month {{ font-size: 14px; font-weight: 650; }}
+.nexus button.calendar-step {{ min-width: 28px; min-height: 28px; padding: 0; border-radius: 8px; background: transparent; color: {center_muted}; }}
 .nexus button.calendar-step:hover {{ background: alpha(@nexus_fg, 0.08); color: @nexus_fg; }}
-.notification-center calendar {{ background: transparent; color: @nexus_fg; border: none; padding: 0; font-size: 12px; font-feature-settings: "tnum"; }}
-.notification-center calendar > grid {{ padding: 0; }}
-.notification-center calendar > grid > label {{ min-width: 24px; min-height: 24px; margin: 0; padding: 0; border-radius: 999px; }}
-.notification-center calendar > grid > label:selected {{ background: none; color: @nexus_fg; }}
-.notification-center calendar > grid > label.day-name {{ color: {center_muted}; font-size: 11px; font-weight: 600; }}
-.notification-center calendar > grid > label.week-number {{ color: transparent; }}
-.notification-center calendar > grid > label.other-month {{ color: alpha(@nexus_fg, 0.45); }}
-.notification-center calendar > grid > label.today, .notification-center calendar > grid > label.today:selected {{ background: radial-gradient(circle closest-side, @nexus_accent 92%, transparent 100%); color: @nexus_on_accent; font-weight: 600; }}
+.nexus button.calendar-today {{ min-height: 24px; padding: 0 10px; margin-right: 4px; border-radius: 8px; font-size: 12px; font-weight: 600; background: alpha(@nexus_fg, 0.08); color: @nexus_fg; }}
+.nexus button.calendar-today:hover {{ background: alpha(@nexus_fg, 0.14); }}
+.notification-center .calendar-weekday {{ color: {center_muted}; font-size: 11px; font-weight: 600; min-height: 22px; }}
+.nexus button.calendar-cell {{ background: none; border: none; box-shadow: none; outline: none; padding: 1px 0 3px; min-width: 0; min-height: 0; border-radius: 0; }}
+.nexus button.calendar-cell:hover, .nexus button.calendar-cell:active {{ background: none; }}
+.notification-center .calendar-day {{ min-width: 30px; min-height: 30px; border-radius: 999px; font-size: 13px; font-feature-settings: "tnum"; color: @nexus_fg; transition: background 120ms ease-out; }}
+.nexus button.calendar-cell:hover .calendar-day {{ background: alpha(@nexus_fg, 0.08); }}
+.nexus button.calendar-cell:active .calendar-day {{ background: alpha(@nexus_fg, 0.16); }}
+.nexus button.calendar-cell:focus-visible .calendar-day {{ outline: 2px solid alpha(@nexus_accent, 0.9); outline-offset: 1px; }}
+.nexus button.calendar-cell.outside .calendar-day {{ color: alpha(@nexus_fg, 0.42); }}
+.nexus button.calendar-cell.selected .calendar-day {{ background: alpha(@nexus_fg, 0.16); font-weight: 650; }}
+.nexus button.calendar-cell.today .calendar-day {{ background: @nexus_accent; color: @nexus_on_accent; font-weight: 650; }}
+.nexus button.calendar-cell.today:hover .calendar-day {{ background: mix(@nexus_accent, @nexus_fg, 0.12); }}
+.notification-center .calendar-day-head {{ margin-top: 8px; padding: 8px 0 2px 6px; border-top: 1px solid alpha(@nexus_fg, 0.08); }}
+.notification-center .calendar-day-title {{ font-size: 13px; font-weight: 600; }}
+.notification-center .calendar-event {{ padding: 6px; border-radius: 8px; background: none; border: none; box-shadow: none; min-height: 0; color: @nexus_fg; }}
+.nexus button.calendar-event {{ padding: 6px; border-radius: 8px; background: none; }}
+.nexus button.calendar-event:hover {{ background: alpha(@nexus_fg, 0.07); }}
+.notification-center .calendar-event-dot {{ margin-top: 6px; min-width: 8px; }}
+.notification-center .calendar-event-title {{ font-size: 13px; font-weight: 550; }}
+.notification-center .calendar-empty, .notification-center .calendar-status {{ padding: 4px 6px 2px; }}
+.notification-center .calendar-form {{ padding: 6px 0 0 0; }}
+.notification-center .calendar-field {{ padding-left: 6px; font-size: 13px; }}
+.nexus button.calendar-delete {{ color: @nexus_danger; }}
+.nexus entry.error {{ outline: 2px solid alpha(@nexus_danger, 0.8); outline-offset: -2px; }}
+.notification-center .calendar-actions {{ margin-top: 4px; }}
 .nexus .notification .app-name {{ font-size: 12px; font-weight: 600; color: @nexus_muted; }}
 .nexus .notification .summary {{ font-weight: 600; }}
 .nexus .notification .body {{ color: alpha(@nexus_fg, 0.84); }}
@@ -624,8 +642,6 @@ window.nexus.nexus-bar {{ background: transparent; }}
 .nexus-bar .bar-island > button, .nexus-bar .bar-island > box > button {{ margin-top: 4px; margin-bottom: 4px; }}
 .nexus-bar button:hover {{ background: alpha(@nexus_fg, 0.12); }}
 .nexus-bar button:active {{ background: alpha(@nexus_fg, 0.18); }}
-.nexus-bar .bar-brand {{ color: @nexus_fg; }}
-.nexus-bar .bar-app {{ font-weight: 650; font-size: 13px; margin: 0 10px 0 4px; }}
 .nexus-bar button.bar-phone.away image {{ opacity: 0.45; }}
 .nexus-bar button.bar-phone.low label {{ color: @nexus_danger; }}
 .nexus-bar .bar-value {{ font-size: 12px; font-weight: 500; font-feature-settings: "tnum"; }}
@@ -728,16 +744,26 @@ button.quick-entry .quick-detail {{ font-weight: 400; font-size: 12px; }}
 .monitor-page .monitor-bar.hot > trough > progress {{ background: @nexus_error; }}
 .monitor .monitor-search {{ padding: 4px 10px; min-height: 0; }}
 .monitor button.monitor-tree, .monitor button.monitor-end {{ padding: 4px 12px; min-height: 0; font-size: 13px; }}
+.monitor button.monitor-tree {{ background: transparent; color: @nexus_muted; }}
+.monitor button.monitor-tree:hover {{ background: alpha(@nexus_fg, 0.07); color: @nexus_fg; }}
 .monitor button.monitor-tree:checked {{ background: alpha(@nexus_accent, 0.18); color: @nexus_accent_fg; }}
-.monitor .monitor-footer {{ border-top: 1px solid alpha(@nexus_fg, 0.08); padding-top: 8px; }}
+.monitor .monitor-footer {{ border-top: 1px solid alpha(@nexus_fg, 0.08); padding-top: 10px; min-height: 58px; }}
+.monitor .monitor-detail-name {{ font-size: 14px; font-weight: 600; }}
 .monitor .monitor-question {{ font-size: 13px; font-weight: 600; }}
-.monitor .monitor-columns button {{ padding: 4px 0; min-height: 0; font-size: 12px; font-weight: 600; color: @nexus_muted; background: transparent; border: none; outline: none; box-shadow: none; }}
-.monitor .monitor-columns button:hover {{ color: @nexus_fg; background: alpha(@nexus_fg, 0.07); }}
-.monitor .monitor-columns button.active {{ color: @nexus_accent_fg; background: alpha(@nexus_accent, 0.16); }}
+.monitor .monitor-columns {{ border-bottom: 1px solid alpha(@nexus_fg, 0.08); padding-bottom: 6px; }}
+.monitor .monitor-columns button {{ padding: 2px 0; min-height: 0; font-size: 12px; font-weight: 500; color: @nexus_muted; background: transparent; border: none; outline: none; box-shadow: none; }}
+.monitor .monitor-columns button:hover {{ color: @nexus_fg; background: transparent; }}
+.monitor .monitor-columns button.active {{ color: @nexus_fg; font-weight: 600; background: transparent; }}
+.monitor .monitor-columns button:focus-visible {{ outline: 2px solid alpha(@nexus_accent, 0.8); outline-offset: 1px; }}
 .monitor .monitor-list {{ background: transparent; }}
-.monitor .monitor-list row {{ padding: 4px 8px; border-radius: 6px; font-size: 13px; font-feature-settings: "tnum"; }}
-.monitor .monitor-list row:hover {{ background: alpha(@nexus_fg, 0.06); }}
-.monitor .monitor-list row:selected {{ background: alpha(@nexus_fg, 0.13); color: @nexus_fg; }}
+.monitor .monitor-list row {{ padding: 6px 8px; border-radius: 6px; font-size: 13px; font-feature-settings: "tnum"; }}
+.monitor .monitor-list row:hover {{ background: alpha(@nexus_fg, 0.05); }}
+.monitor .monitor-list row:selected {{ background: alpha(@nexus_accent, 0.18); color: @nexus_fg; }}
+.monitor .monitor-list row:focus-visible {{ outline: 2px solid alpha(@nexus_accent, 0.8); outline-offset: -2px; }}
+.monitor .monitor-list row:selected .monitor-proc-name {{ color: @nexus_accent_fg; }}
+.monitor .monitor-proc-name {{ font-size: 14px; font-weight: 550; }}
+.monitor .monitor-quiet {{ color: @nexus_muted; font-size: 12px; }}
+.monitor-page .monitor-proc-bar > trough {{ background: transparent; min-width: 0; }}
 
 /* Phone: one header for every state, then what that state needs. */
 .phone-page .phone-avatar {{ min-width: 48px; min-height: 48px; border-radius: 12px; background: alpha(@nexus_fg, 0.07); color: @nexus_muted; }}
@@ -822,6 +848,32 @@ window.call button.compose-round:disabled {{ opacity: 0.4; }}
 window.call .error {{ color: @nexus_error; }}
 window.call button.compose-round.hang-up {{ background: @nexus_error; color: #ffffff; }}
 window.call button.compose-round.hang-up:hover {{ background: mix(@nexus_error, #000000, 0.12); }}
+/* Passwords: a quiet column and one page, as in Messages. */
+window.passwords .passwords-side {{ background: mix(@nexus_bg, @nexus_fg, 0.025); border-right: 1px solid alpha(@nexus_fg, 0.06); }}
+window.passwords .passwords-head {{ padding: 14px 10px 8px 18px; }}
+window.passwords entry.passwords-search {{ margin: 0 12px 8px; }}
+window.passwords .passwords-list {{ background: transparent; padding: 0 8px 8px; }}
+window.passwords .passwords-list > row {{ border-radius: 10px; padding: 7px 10px; margin: 1px 0; }}
+window.passwords .passwords-list > row:hover {{ background: alpha(@nexus_fg, 0.05); }}
+window.passwords .passwords-list > row:selected {{ background: alpha(@nexus_fg, 0.1); color: @nexus_fg; }}
+window.passwords .passwords-list > row:focus-visible {{ outline: 2px solid alpha(@nexus_accent, 0.8); outline-offset: -2px; }}
+window.passwords .tile {{ border-radius: 10px; background: alpha(@nexus_accent, 0.16); color: @nexus_accent_fg; font-weight: 650; }}
+window.passwords .tile.small {{ font-size: 14px; }}
+window.passwords .tile.large {{ font-size: 22px; border-radius: 14px; }}
+window.passwords .passwords-status {{ padding: 8px 18px 12px; }}
+window.passwords .passwords-detail {{ padding: 26px 32px 28px; }}
+window.passwords .secret {{ font-family: 'Geist Mono', monospace; font-size: 13px; letter-spacing: 0.3px; }}
+window.passwords .gate-icon {{ -gtk-icon-size: 30px; color: @nexus_muted; margin-bottom: 4px; }}
+window.passwords .sync-banner {{ background: alpha(@nexus_accent, 0.1); padding: 8px 12px 8px 18px; }}
+window.passwords .sync-banner.different {{ background: alpha(@nexus_error, 0.08); }}
+window.passwords entry.invalid, window.passwords entry.invalid:focus-within {{ outline: 2px solid alpha(@nexus_error, 0.75); outline-offset: -2px; }}
+window.passwords entry.shake-a {{ animation: field-shake-a 300ms ease-out; }}
+window.passwords entry.shake-b {{ animation: field-shake-b 300ms ease-out; }}
+window.passwords .passwords-generator {{ padding: 2px 2px 0; }}
+window.passwords textview.passwords-notes, window.passwords textview.passwords-notes > text {{ background: transparent; color: @nexus_fg; caret-color: @nexus_accent; }}
+window.passwords textview.passwords-notes {{ background: alpha(@nexus_fg, 0.07); border-radius: 8px; padding: 6px 10px; }}
+window.passwords button.passwords-delete {{ color: @nexus_danger; }}
+window.passwords .passwords-earlier {{ color: @nexus_muted; }}
 window.messages button.compose-round.hang-up {{ background: @nexus_error; color: #ffffff; }}
 window.messages button.compose-round.hang-up:hover {{ background: mix(@nexus_error, #000000, 0.12); }}
 window.messages .compose-recording {{ min-height: 40px; padding: 0 16px; border-radius: 20px; background: alpha(@nexus_error, 0.1); }}

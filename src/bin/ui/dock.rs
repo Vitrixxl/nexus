@@ -152,14 +152,6 @@ impl Apps {
                 .collect();
         }
     }
-    /// The name of the application a window of `class` belongs to.
-    pub fn name(&self, class: &str) -> String {
-        self.by_class.get(&class.to_lowercase()).map_or_else(
-            // A reverse-domain class says its name last.
-            || class.rsplit('.').next().unwrap_or(class).to_string(),
-            |entry| entry.name.clone(),
-        )
-    }
     /// The kept applications in their places, then the others running.
     pub fn docked(&self, clients: &Value) -> Vec<App> {
         let mut apps: Vec<App> = self
@@ -1031,8 +1023,6 @@ mod tests {
         assert!(docked[1].windows.is_empty() && docked[1].kept);
         assert!(!docked[2].kept && docked[2].id.is_some());
         assert!(docked[3].id.is_none());
-        assert_eq!(apps.name("FOOT"), "Foot");
-        assert_eq!(apps.name("nameless"), "nameless");
     }
     #[test]
     fn pins_outlast_the_most_used_and_keep_their_order() {

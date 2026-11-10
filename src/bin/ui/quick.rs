@@ -300,7 +300,7 @@ fn note() -> gtk::Label {
 fn heading(text: &str) -> gtk::Label {
     label(text, "quick-heading")
 }
-fn icon_button(icon: &str, title: &str) -> gtk::Button {
+pub(super) fn icon_button(icon: &str, title: &str) -> gtk::Button {
     let b = gtk::Button::from_icon_name(icon);
     b.add_css_class("quick-more");
     b.set_valign(gtk::Align::Center);
@@ -553,7 +553,7 @@ impl Quick {
         let (quiet_root, quiet) = tile(
             "Do Not Disturb",
             "notifications-disabled-symbolic",
-            move || drawer("notifications", panel_monitor(&on_panel).as_ref()),
+            move || drawer("notifications:quick", panel_monitor(&on_panel).as_ref()),
         );
         let (night_root, night) = tile(
             "Night Light",

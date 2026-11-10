@@ -45,6 +45,8 @@ public class Control extends AccessibilityService {
     static JSONObject op(String op, JSONObject a) throws Exception {
         Control c = self;
         if (c == null) throw new Exception("Turn on Nexus in the phone's Accessibility settings");
+        // FLAG_SECURE hides the pixels; nothing else keeps the tree or a blind tap away from the vault.
+        if (Vault.onScreen() && blockedOnVault(op, a)) throw new Exception("The password vault is open on the phone: its screen is off limits");
         JSONObject ok = new JSONObject();
         switch (op) {
             case "screen_shot": return c.shot(a.optInt("max"), a.optInt("q", 80));
@@ -61,6 +63,15 @@ public class Control extends AccessibilityService {
             case "screen_open": c.open(a.getString("package")); return ok;
             case "cast_start": Cast.begin(c); return ok;
             default: throw new Exception("Unknown request");
+        }
+    }
+
+    /** Leaving the vault stays possible; reading or touching it doesn't. */
+    private static boolean blockedOnVault(String op, JSONObject a) {
+        switch (op) {
+            case "screen_apps": case "screen_open": case "cast_start": return false;
+            case "screen_key": return "backspace".equals(a.optString("key")) || "enter".equals(a.optString("key"));
+            default: return true;
         }
     }
 

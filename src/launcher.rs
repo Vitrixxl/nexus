@@ -29,9 +29,6 @@ impl Catalogue {
     }
     pub fn launch(&mut self, id: &str) -> anyhow::Result<()> {
         use anyhow::Context;
-        if !self.applications.iter().any(|a| a.id == id) {
-            anyhow::bail!("Unknown application");
-        }
         let app = gio::DesktopAppInfo::new(id).context("Application is no longer installed")?;
         app.launch(&[], None::<&gio::AppLaunchContext>)?;
         self.history.record(id);

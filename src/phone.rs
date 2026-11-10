@@ -10,10 +10,12 @@
 //! never changed, is the only credential: the QR code stays the same, and any
 //! phone that scanned it reconnects with a tap. Deleting the file revokes them
 //! all. The listener binds the Tailscale address alone, never the LAN.
+use crate::calendar::{self, Change};
 use crate::notesync::{self, Side};
+use crate::vault;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
     fs,
@@ -65,6 +67,31 @@ pub struct PhoneState {
     pub released: bool,
     #[serde(default)]
     pub notes: NotesSync,
+    #[serde(default)]
+    pub calendar: CalendarSync,
+    #[serde(default)]
+    pub vault: VaultSync,
+}
+/// Where the password sync stands. Never anything of the vault itself.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct VaultSync {
+    /// This desktop's answer for the connected phone: ask, yes or no.
+    pub here: String,
+    /// The phone's answer, or empty while unknown.
+    pub there: String,
+    /// waiting, synced, different, or empty.
+    pub status: String,
+    pub error: Option<String>,
+}
+/// Where the calendar stands: the UI reads the events again when it moves.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CalendarSync {
+    pub revision: u64,
+    pub error: Option<String>,
+    /// Changes waiting for the phone.
+    pub pending: usize,
+    /// Whether the phone has answered once: the copy here means something.
+    pub synced: bool,
 }
 /// Where the notes sync stands, for the Phone page and the phone.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -153,6 +180,12 @@ pub struct Phone {
     bus: OnceLock<Option<zbus::blocking::Connection>>,
     /// Set when the notes should sync soon: the phone connected or changed some.
     kick: (Mutex<bool>, Condvar),
+    /// The phone's calendars, and the changes on their way to them.
+    calendar: Mutex<calendar::Cache>,
+    /// Set when the calendar should sync: connected, changed on either side.
+    calendar_kick: (Mutex<bool>, Condvar),
+    /// Set when the vault should sync: connected, or either side changed.
+    vault_kick: (Mutex<bool>, Condvar),
 }
 
 fn config() -> PathBuf {
@@ -184,7 +217,7 @@ fn save_last(s: &PhoneState) {
     let _ = fs::create_dir_all(path.parent().unwrap());
     let _ = fs::write(path, json!([s.last, s.seen]).to_string());
 }
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
@@ -266,7 +299,7 @@ fn tailscale_ip() -> Result<String> {
 /// Whether the screen is locked: `nexus lock` or hyprlock runs. Read from
 /// /proc rather than by taking the lock's file lock, which would make a
 /// `nexus lock` started at that instant think the screen already locked.
-fn screen_locked() -> bool {
+pub fn screen_locked() -> bool {
     let Ok(procs) = fs::read_dir("/proc") else {
         return false;
     };
@@ -314,7 +347,7 @@ fn claim_name(dir: &Path, name: &str) -> Result<PathBuf> {
     }
     bail!("No free name left")
 }
-fn hostname() -> String {
+pub fn hostname() -> String {
     fs::read_to_string("/etc/hostname")
         .map(|h| h.trim().to_owned())
         .unwrap_or_else(|_| "Nexus".into())
@@ -359,15 +392,20 @@ impl Phone {
             let mut s = phone.state.lock().unwrap();
             (s.last, s.seen) = (last, seen);
         }
+        let p = phone.clone();
+        thread::spawn(move || p.sync_vault());
         #[cfg(feature = "lab")]
         if std::env::var_os("NEXUS_PHONE_FAKE").is_some() {
             let p = phone.clone();
             thread::spawn(move || {
                 loop {
-                    if let Some(s) =
-                        fake().and_then(|f| serde_json::from_value(f["state"].clone()).ok())
+                    if let Some(mut s) = fake()
+                        .and_then(|f| serde_json::from_value::<PhoneState>(f["state"].clone()).ok())
                     {
-                        *p.state.lock().unwrap() = s;
+                        let mut current = p.state.lock().unwrap();
+                        // The sync worker runs against the fake phone and owns this.
+                        s.vault = std::mem::take(&mut current.vault);
+                        *current = s;
                     }
                     thread::sleep(Duration::from_secs(1));
                 }
@@ -435,6 +473,8 @@ impl Phone {
         });
         let p = phone.clone();
         thread::spawn(move || p.sync_notes());
+        let p = phone.clone();
+        thread::spawn(move || p.sync_calendar());
         let p = phone.clone();
         thread::spawn(move || {
             loop {
@@ -546,6 +586,8 @@ impl Phone {
             let _ = link.send(&json!({ "t": "notes_state", "state": s.notes }));
         }
         self.kick_notes();
+        self.kick_calendar();
+        self.kick_vault();
         let ping = Arc::downgrade(&link);
         thread::spawn(move || {
             while let Some(link) = ping.upgrade() {
@@ -565,6 +607,8 @@ impl Phone {
                 Some("notif_gone") => self.close(msg["key"].as_str().unwrap_or_default()),
                 Some("clip") => self.copy(msg["text"].as_str().unwrap_or_default()),
                 Some("notes_changed") => self.kick_notes(),
+                Some("calendar_changed") => self.kick_calendar(),
+                Some("vault_changed") => self.kick_vault(),
                 // On connecting, then with each answer to the daemon's ping.
                 Some("info" | "pong") if msg["info"].is_object() => {
                     self.state.lock().unwrap().info = Some(msg["info"].clone());
@@ -782,6 +826,314 @@ a{{display:block;padding:16px;border-radius:16px;text-align:center;text-decorati
                 Err(e) => format!("Could not send {name}: {e}"),
             });
         });
+    }
+
+    fn kick_calendar(&self) {
+        *self.calendar_kick.0.lock().unwrap() = true;
+        self.calendar_kick.1.notify_all();
+    }
+    fn linked(&self) -> bool {
+        #[cfg(feature = "lab")]
+        if fake().is_some() {
+            return true;
+        }
+        self.link.lock().unwrap().is_some()
+    }
+    /// The events between two instants, as they stand here, and the calendars.
+    /// Far from today only the phone has them.
+    pub fn calendar_events(&self, from: i64, to: i64) -> Value {
+        let (mut events, calendars, covered) = {
+            let c = self.calendar.lock().unwrap();
+            (
+                c.between(from, to),
+                c.calendars.clone(),
+                from >= c.from && to <= c.to,
+            )
+        };
+        if !covered
+            && let Ok(listing) = self.request("calendar_list", json!({ "from": from, "to": to }))
+            && let Ok(mut far) = serde_json::from_value::<calendar::Cache>(listing)
+        {
+            calendar::sort(&mut far.events);
+            events = far.events;
+        }
+        json!({ "events": events, "calendars": calendars })
+    }
+    /// A change from the desktop: shown at once, sent as soon as it can be.
+    pub fn calendar_change(&self, change: Change) -> Result<()> {
+        let pending = {
+            let mut c = self.calendar.lock().unwrap();
+            c.apply(change);
+            Self::save_calendar(&c)?;
+            c.pending.len()
+        };
+        let mut s = self.state.lock().unwrap();
+        s.calendar.revision += 1;
+        s.calendar.pending = pending;
+        drop(s);
+        self.kick_calendar();
+        Ok(())
+    }
+    fn save_calendar(cache: &calendar::Cache) -> Result<()> {
+        let path = state_file("calendar.json");
+        let part = path.with_extension("part");
+        fs::create_dir_all(path.parent().context("No state folder")?)?;
+        fs::write(&part, serde_json::to_vec(cache)?)?;
+        fs::rename(&part, &path)?;
+        Ok(())
+    }
+    /// Follows the phone's calendars, for as long as the daemon runs: when it
+    /// connects or says they changed, when the desktop changes one, and every
+    /// quarter of an hour so that the days covered keep moving on.
+    fn sync_calendar(&self) {
+        if let Some(saved) = fs::read(state_file("calendar.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<calendar::Cache>(&b).ok())
+        {
+            let mut s = self.state.lock().unwrap();
+            s.calendar.pending = saved.pending.len();
+            s.calendar.synced = !saved.calendars.is_empty();
+            drop(s);
+            *self.calendar.lock().unwrap() = saved;
+        }
+        loop {
+            {
+                let (lock, cond) = &self.calendar_kick;
+                let (mut kicked, _) = cond
+                    .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(900), |k| !*k)
+                    .unwrap();
+                *kicked = false;
+            }
+            // A burst of changes from the phone's own sync makes one listing.
+            thread::sleep(Duration::from_millis(300));
+            if self.linked()
+                && let Err(e) = self.sync_calendar_once()
+            {
+                self.state.lock().unwrap().calendar.error = Some(format!("{e:#}"));
+            }
+        }
+    }
+    fn calendar_listing(&self) -> Result<calendar::Cache> {
+        const DAY: i64 = 86_400_000;
+        let (from, to) = (now_ms() - 190 * DAY, now_ms() + 560 * DAY);
+        let listing = self.request("calendar_list", json!({ "from": from, "to": to }))?;
+        let mut cache: calendar::Cache = serde_json::from_value(listing)?;
+        (cache.from, cache.to) = (from, to);
+        Ok(cache)
+    }
+    fn sync_calendar_once(&self) -> Result<()> {
+        // First: a phone that refuses the listing has refused the changes too.
+        let mut listing = self.calendar_listing()?;
+        let changes = self.calendar.lock().unwrap().pending.clone();
+        let mut refused = None;
+        for change in &changes {
+            let (op, event) = match change {
+                Change::Save(e) => ("calendar_save", e),
+                Change::Delete(e) => ("calendar_delete", e),
+            };
+            let mut event = event.clone();
+            if event.id.starts_with(calendar::LOCAL) {
+                event.id.clear();
+            }
+            match self.request(op, json!({ "event": event })) {
+                Ok(_) => {}
+                // Gone, or not answering: the change waits for the next time.
+                Err(e) if !self.linked() || e.to_string() == "The phone did not answer" => {
+                    return Err(e);
+                }
+                // Refused: it would be refused forever.
+                Err(e) => refused = Some(format!("{e:#}")),
+            }
+            let mut c = self.calendar.lock().unwrap();
+            if let Some(i) = c.pending.iter().position(|p| p == change) {
+                c.pending.remove(i);
+            }
+        }
+        if !changes.is_empty() {
+            listing = self.calendar_listing()?;
+        }
+        let mut c = self.calendar.lock().unwrap();
+        let changed = c.replace(listing);
+        let pending = c.pending.len();
+        Self::save_calendar(&c)?;
+        drop(c);
+        let mut s = self.state.lock().unwrap();
+        s.calendar.revision += u64::from(changed || !changes.is_empty());
+        s.calendar.pending = pending;
+        s.calendar.synced = true;
+        s.calendar.error = refused;
+        Ok(())
+    }
+
+    pub fn kick_vault(&self) {
+        *self.vault_kick.0.lock().unwrap() = true;
+        self.vault_kick.1.notify_all();
+    }
+    /// `{phone name: "yes" | "no"}`; a phone not in it has not been answered.
+    // ponytail: phones are told apart by name: two with the same one share an
+    // answer, and the link gives them no other identity.
+    fn vault_answers() -> Map<String, Value> {
+        fs::read(state_file("vault-sync.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+    fn vault_answer(phone: &str) -> String {
+        match Self::vault_answers().get(phone).and_then(Value::as_str) {
+            Some(a @ ("yes" | "no")) => a.to_owned(),
+            _ => "ask".to_owned(),
+        }
+    }
+    fn vault_peer(&self) -> Option<String> {
+        self.linked()
+            .then(|| self.state.lock().unwrap().name.clone())?
+    }
+    /// Answers the question for the connected phone: yes, no, or ask again.
+    pub fn set_vault_answer(&self, answer: &str) -> Result<()> {
+        let phone = self.vault_peer().context("No phone is connected")?;
+        if !matches!(answer, "yes" | "no" | "ask") {
+            bail!("Invalid answer");
+        }
+        let mut answers = Self::vault_answers();
+        if answer == "ask" {
+            answers.remove(&phone);
+        } else {
+            answers.insert(phone, answer.into());
+        }
+        let path = state_file("vault-sync.json");
+        let part = path.with_extension("part");
+        fs::create_dir_all(path.parent().context("No state folder")?)?;
+        fs::write(&part, Value::Object(answers).to_string())?;
+        fs::rename(&part, &path)?;
+        self.kick_vault();
+        Ok(())
+    }
+    /// The phone's answer, and an error unless both sides have said yes.
+    fn vault_both_yes(&self) -> Result<()> {
+        let phone = self.vault_peer().context("No phone is connected")?;
+        let hello = self.request("vault_hello", json!({}))?;
+        if Self::vault_answer(&phone) != "yes" || hello["consent"] != "yes" {
+            bail!("Syncing has not been allowed on both sides");
+        }
+        Ok(())
+    }
+    /// Leaves the phone's vault file where the Passwords window can read it,
+    /// for the "different vault" merge. The file stays off the daemon's IPC.
+    pub fn vault_fetch_other(&self) -> Result<Value> {
+        self.vault_both_yes()?;
+        let pulled = self.request("vault_pull", json!({}))?;
+        let file = vault::VaultFile::parse(pulled["vault"].clone())
+            .context("The phone has no vault to merge")?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(crate::runtime()?.join("vault-other.json"))?;
+        f.write_all(&serde_json::to_vec(&file)?)?;
+        Ok(Value::Null)
+    }
+    /// Gives the phone this desktop's vault to replace its own, after a merge.
+    pub fn vault_adopt(&self) -> Result<Value> {
+        self.vault_both_yes()?;
+        let file = vault::load()?.context("There is no vault on this desktop")?;
+        self.request("vault_push", json!({ "vault": file, "adopt": true }))?;
+        self.kick_vault();
+        Ok(Value::Null)
+    }
+    /// Ciphertext only: merging never needs the master password.
+    fn sync_vault(&self) {
+        let stamp = || {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(vault::path())
+                .ok()
+                .map(|m| (m.mtime(), m.mtime_nsec(), m.len()))
+        };
+        // Starts unset, so that the first turn syncs whatever the file does.
+        let mut seen = None;
+        let mut asked = false;
+        loop {
+            let kicked = {
+                let (lock, cond) = &self.vault_kick;
+                let (mut kicked, _) = cond
+                    .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(5), |k| !*k)
+                    .unwrap();
+                std::mem::replace(&mut *kicked, false)
+            };
+            let Some(phone) = self.vault_peer() else {
+                asked = false;
+                seen = None;
+                self.state.lock().unwrap().vault = VaultSync::default();
+                continue;
+            };
+            let now = Some(stamp());
+            if !kicked && now == seen {
+                continue;
+            }
+            // A burst of writes makes one sync.
+            thread::sleep(Duration::from_millis(300));
+            if let Err(e) = self.sync_vault_once(&phone, &mut asked) {
+                self.state.lock().unwrap().vault.error = Some(format!("{e:#}"));
+            }
+            seen = Some(stamp());
+        }
+    }
+    fn sync_vault_once(&self, phone: &str, asked: &mut bool) -> Result<()> {
+        let here = Self::vault_answer(phone);
+        if here == "no" {
+            self.state.lock().unwrap().vault = VaultSync {
+                here,
+                ..VaultSync::default()
+            };
+            return Ok(());
+        }
+        let hello = self.request("vault_hello", json!({}))?;
+        let there = hello["consent"].as_str().unwrap_or("ask").to_owned();
+        let mut sync = VaultSync {
+            here: here.clone(),
+            there: there.clone(),
+            ..VaultSync::default()
+        };
+        let both_yes = here == "yes" && there == "yes";
+        if !both_yes {
+            if here == "ask" && !*asked {
+                *asked = true;
+                self.post(
+                    "Passwords",
+                    "dialog-password-symbolic",
+                    &format!("Sync passwords with {phone}?"),
+                    "Open Passwords to answer. Nothing moves until both sides say yes.",
+                    0,
+                    false,
+                );
+            }
+            sync.status = "waiting".into();
+            self.state.lock().unwrap().vault = sync;
+            return Ok(());
+        }
+        let pulled = self.request("vault_pull", json!({}))?;
+        let remote = match pulled["vault"].clone() {
+            Value::Null => None,
+            v => Some(vault::VaultFile::parse(v)?),
+        };
+        let (to_push, status) = vault::update(|local| match (local, remote) {
+            (None, None) => Ok((None, (None, ""))),
+            (None, Some(remote)) => Ok((Some(remote), (None, "synced"))),
+            (Some(local), None) => Ok((None, (Some(local), "synced"))),
+            (Some(local), Some(remote)) if local.id != remote.id => Ok((None, (None, "different"))),
+            (Some(mut local), Some(remote)) => {
+                let changed = local.merge(&remote)?;
+                let push = (local != remote).then(|| local.clone());
+                Ok((changed.then_some(local), (push, "synced")))
+            }
+        })?;
+        if let Some(file) = to_push {
+            self.request("vault_push", json!({ "vault": file, "adopt": false }))?;
+        }
+        sync.status = status.into();
+        self.state.lock().unwrap().vault = sync;
+        Ok(())
     }
 
     fn kick_notes(&self) {

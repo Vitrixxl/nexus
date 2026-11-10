@@ -1,0 +1,56 @@
+body { width: 360px; height: 520px; overflow: hidden; position: relative; }
+#app { height: 100%; display: flex; flex-direction: column; }
+
+.bar { display: flex; align-items: center; gap: 4px; padding: 10px 10px 8px; flex: none; }
+.bar h1 { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+.search { position: relative; flex: 1; min-width: 0; }
+.search .icon { position: absolute; left: 9px; top: 8px; color: var(--muted); pointer-events: none; }
+.search input { padding-left: 31px; height: 32px; }
+.scroller { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 10px; }
+.section { font-size: 12px; font-weight: 600; color: var(--muted); padding: 12px 8px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.section:first-child { padding-top: 4px; }
+.row .action { padding: 4px 10px; font-size: 13px; flex: none; }
+.row .square { width: 28px; height: 28px; color: var(--muted); background: transparent; }
+.row .square:hover:not(:disabled) { background: var(--veil-2); color: var(--fg); }
+.row .square.done { color: var(--accent-fg); }
+.inline-empty { padding: 2px 8px 6px; font-size: 13px; color: var(--muted); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.inline-empty button { padding: 3px 10px; font-size: 13px; flex: none; }
+
+.gate { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 16px; padding: 28px; }
+.gate .brand { color: var(--accent-fg); }
+.gate .brand .icon { width: 26px; height: 26px; stroke-width: 1.4; }
+.gate .stack { display: flex; flex-direction: column; gap: 6px; }
+.gate h1 { font-size: 20px; letter-spacing: -.02em; }
+.gate form { display: flex; flex-direction: column; gap: 8px; }
+.gate button.primary { height: 34px; }
+.reveal-field { position: relative; }
+.reveal-field input { padding-right: 36px; }
+.reveal-field button { position: absolute; right: 3px; top: 3px; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: transparent; color: var(--muted); }
+.reveal-field button:hover { background: var(--veil); color: var(--fg); }
+
+.detail { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 14px; }
+.field-block { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field-block > label, .field-label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.field-value { display: flex; align-items: center; gap: 2px; min-height: 30px; }
+.field-value .value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field-value .square { color: var(--muted); background: transparent; }
+.field-value .square:hover:not(:disabled) { background: var(--veil-2); color: var(--fg); }
+.field-value .square.done { color: var(--accent-fg); }
+.notes { white-space: pre-wrap; overflow-wrap: anywhere; }
+.urls { display: flex; flex-direction: column; gap: 2px; }
+.urls span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+form.editor { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+form.editor .detail { flex: 1; }
+.pair { display: flex; gap: 4px; }
+.pair .reveal-field { flex: 1; min-width: 0; }
+.generator { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 8px; background: var(--veil); }
+.generator .line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.generator input[type=range] { flex: 1; padding: 0; box-shadow: none; background: transparent; accent-color: var(--accent); }
+.generator input[type=checkbox] { width: auto; accent-color: var(--accent); }
+.generator .count { min-width: 2ch; text-align: right; color: var(--fg); }
+.footer { display: flex; gap: 6px; padding: 10px 14px; flex: none; box-shadow: 0 -1px 0 var(--veil-2); }
+.footer .spacer { flex: 1; }
+.footer button { height: 32px; }
+
+#toast { position: absolute; left: 10px; right: 10px; bottom: 10px; padding: 8px 12px; border-radius: 8px; background: var(--surface); box-shadow: 0 0 0 1px var(--edge), 0 6px 14px -8px rgba(0,0,0,.55); font-size: 13px; }
