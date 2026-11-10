@@ -75,3 +75,8 @@ path = "src/bin/vaultd.rs"
 [[bin]]
 name = "nexus-vault-host"
 path = "src/bin/vault_host.rs"
+
+# Login screen for greetd; run it inside a terminal (cage + foot).
+[[bin]]
+name = "nexus-greeter"
+path = "src/bin/greeter.rs"

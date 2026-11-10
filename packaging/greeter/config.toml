@@ -1,0 +1,8 @@
+# Installed as /etc/greetd/config.toml by packaging/greeter/install.sh.
+[terminal]
+vt = 1
+
+[default_session]
+# cage -s keeps Ctrl+Alt+Fn working, so a text console is always one switch away.
+command = "env XKB_DEFAULT_LAYOUT=@XKBLAYOUT@ XKB_DEFAULT_VARIANT=@XKBVARIANT@ cage -s -- foot --config=/etc/greetd/nexus-greeter-foot.ini /usr/local/bin/nexus-greeter"
+user = "greeter"
