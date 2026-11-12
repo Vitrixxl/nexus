@@ -169,6 +169,7 @@ hl.bind("SUPER + ALT + B", run("nexus bluetooth"))
 hl.bind("SUPER + ALT + A", run("nexus sound"))
 hl.bind("SUPER + ALT + P", run("nexus power"))
 hl.bind("SUPER + ALT + L", run("nexus lock"))
+hl.bind("SUPER + SHIFT + L", run("nexus lock"))
 hl.bind("SUPER + SHIFT + V", run("nexus clipboard"))
 hl.bind("CTRL + ALT + Delete", run("nexus power"))
 
@@ -179,6 +180,10 @@ hl.bind("ALT + Print", run("nexus screenshot window --save"))
 hl.bind("SUPER + SHIFT + S", run("nexus screenshot"))
 hl.bind("SUPER + SHIFT + R", run("nexus screenshot --record"))
 ```
+
+## Login screen
+
+The greeter in `packaging/greeter` starts Hyprland through its session file, so nothing changes here: section 2 still starts Nexus once Hyprland runs. See "Login screen" in the README.
 
 ## Check it
 

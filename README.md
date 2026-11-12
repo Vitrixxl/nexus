@@ -68,6 +68,12 @@ On systemd desktops you can instead enable the optional service with `systemctl 
 
 `nexus lock` runs as its own process, so the lock holds whatever happens to the shell; if it ever dies, the compositor keeps the session locked. A second `nexus lock` while locked does nothing, so it can serve both a shortcut and hypridle (`lock_cmd = nexus lock`). The password is checked with the PAM service `/etc/pam.d/nexus` when it exists, otherwise `login` (the stack hyprlock uses); with `pam_faillock`, repeated failures lock the account for a while, as with any locker.
 
+## Login screen
+
+`nexus-greeter` is a login screen for greetd. It runs in a terminal, foot inside cage, and needs neither GTK nor the shell. It offers every user with a login shell and every Wayland session in `/usr/share/wayland-sessions`; ↑/↓ changes the user and Tab the session. Without greetd it starts in a demo mode where the password is `nexus` and Escape quits, so it can be tried from any terminal: `cargo run --release --bin nexus-greeter`.
+
+To install it, build first, then run `sudo packaging/greeter/install.sh <your user>`. The script installs greetd, cage and foot with pacman, copies the greeter to `/usr/local/bin`, and writes `/etc/greetd/config.toml` with the console keyboard layout from `/etc/vconsole.conf`. An existing config is saved as `config.toml.before-nexus`. Before switching anything it checks that the greeter starts as the `greeter` user and that a real greetd accepts its login conversation, using one deliberately wrong password. If either check fails, the display manager stays as it was. Otherwise it replaces `ly@tty2` with greetd from the next boot. To undo: `systemctl disable greetd && systemctl enable ly@tty2`.
+
 ## Battery and power profiles
 
 Click the battery in the bar to open a compact panel below it, aligned to the right edge of the battery button. The three buttons select Power saver, Balanced or Performance; the active profile is highlighted and unsupported modes are disabled. Changes made with `powerprofilesctl` appear while the panel is open. The estimate shows time until fully charged or remaining battery life, with explicit charging/full/unavailable states when no estimate is available.
